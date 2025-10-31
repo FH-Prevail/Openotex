@@ -1,0 +1,360 @@
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import ReactMarkdown from 'react-markdown';
+import { FiRefreshCw, FiZoomIn, FiZoomOut, FiDownload, FiAlertCircle } from 'react-icons/fi';
+import NotificationDialog from './NotificationDialog';
+import '../styles/Preview.css';
+import '../styles/Preview-addon.css';
+
+interface PreviewProps {
+  content: string;
+  compiledOutput: string;
+  currentFileExtension: string | null;
+  currentFilePath: string | null;
+  latexEngine?: 'pdflatex' | 'xelatex' | 'lualatex';
+  onMissingPackages?: (packages: string[]) => void;
+}
+
+const Preview: React.FC<PreviewProps> = ({
+  content,
+  compiledOutput,
+  currentFileExtension,
+  currentFilePath,
+  latexEngine = 'pdflatex',
+  onMissingPackages,
+}) => {
+  const [pdfData, setPdfData] = useState<string>('');
+  const [isCompiling, setIsCompiling] = useState(false);
+  const [compilationStatus, setCompilationStatus] = useState<string>('');
+  const [error, setError] = useState<string>('');
+  const [compilationLog, setCompilationLog] = useState<string>('');
+  const [zoom, setZoom] = useState(100);
+  const [latexInstalled, setLatexInstalled] = useState<boolean | null>(null);
+  const [latexVersion, setLatexVersion] = useState<string>('');
+  const [notification, setNotification] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    type: 'success' | 'error' | 'info';
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'info',
+  });
+
+  const fileExtension = useMemo(
+    () => (currentFileExtension ? currentFileExtension.toLowerCase() : ''),
+    [currentFileExtension]
+  );
+  const isLatexFile = fileExtension === 'tex' || fileExtension === 'latex';
+  const isMarkdownFile = fileExtension === 'md' || fileExtension === 'markdown';
+
+  useEffect(() => {
+    // Only check LaTeX availability once per session; harmless if not a LaTeX file.
+    checkLatexInstallation();
+  }, []);
+
+  useEffect(() => {
+    // Listen for compilation status updates (font/package installation)
+    const { ipcRenderer } = window.require('electron');
+
+    const statusListener = (_event: any, status: { stage: string; message: string }) => {
+      console.log('Compilation status update:', status);
+      setCompilationStatus(status.message);
+
+      // Show notification for important status updates
+      if (status.stage === 'font-installation' || status.stage === 'package-installation') {
+        setNotification({
+          isOpen: true,
+          title: 'Installing Dependencies',
+          message: status.message,
+          type: 'info',
+        });
+      } else if (status.stage === 'retry') {
+        setNotification({
+          isOpen: true,
+          title: 'Retrying Compilation',
+          message: status.message,
+          type: 'success',
+        });
+      }
+    };
+
+    ipcRenderer.on('compilation-status', statusListener);
+
+    return () => {
+      ipcRenderer.removeListener('compilation-status', statusListener);
+    };
+  }, []);
+
+  const checkLatexInstallation = async () => {
+    try {
+      const { ipcRenderer } = window.require('electron');
+      const result = await ipcRenderer.invoke('check-latex-installation');
+
+      if (result.success) {
+        setLatexInstalled(result.installed);
+        if (result.installed) {
+          setLatexVersion(result.version);
+        }
+      }
+    } catch (err) {
+      console.error('Error checking LaTeX installation:', err);
+      setLatexInstalled(false);
+    }
+  };
+
+  const detectMissingPackages = (errorLog: string): string[] => {
+    const packages: Set<string> = new Set();
+
+    // Pattern: ! LaTeX Error: File `package.sty' not found.
+    const pattern1 = /File `([^']+)\.sty' not found/gi;
+    let match;
+    while ((match = pattern1.exec(errorLog)) !== null) {
+      packages.add(match[1]);
+    }
+
+    // Pattern: ! LaTeX Error: Missing \usepackage{package}
+    const pattern2 = /Missing \\usepackage\{([^}]+)\}/gi;
+    while ((match = pattern2.exec(errorLog)) !== null) {
+      packages.add(match[1]);
+    }
+
+    // Pattern: Package package not found
+    const pattern3 = /Package ([a-zA-Z0-9\-]+) not found/gi;
+    while ((match = pattern3.exec(errorLog)) !== null) {
+      packages.add(match[1]);
+    }
+
+    return Array.from(packages);
+  };
+
+  const compileLatex = useCallback(async () => {
+    if (!isLatexFile || !currentFilePath) {
+      return;
+    }
+
+    const { ipcRenderer } = window.require('electron');
+
+    setIsCompiling(true);
+    setError('');
+    setCompilationLog('');
+    setCompilationStatus('Compiling...');
+
+    try {
+      const result = await ipcRenderer.invoke('compile-latex', currentFilePath, latexEngine);
+
+      if (result.success) {
+        setPdfData(result.pdfData);
+        setCompilationLog(result.log);
+        setError('');
+        setCompilationStatus('Compilation successful');
+      } else {
+        setError(result.error || 'Compilation failed');
+        setCompilationLog(result.log || '');
+        setPdfData('');
+        setCompilationStatus('');
+
+        const fullLog = (result.log || '') + '\n' + (result.details || '');
+        const missing = detectMissingPackages(fullLog);
+        if (missing.length > 0 && onMissingPackages) {
+          onMissingPackages(missing);
+        }
+      }
+    } catch (err: any) {
+      setError(`Compilation Error: ${err.message}`);
+      console.error('Error compiling LaTeX:', err);
+      setPdfData('');
+      setCompilationStatus('');
+    } finally {
+      setIsCompiling(false);
+    }
+  }, [isLatexFile, currentFilePath, latexEngine, onMissingPackages]);
+
+  // Trigger compilation when content, engine, or file changes
+  useEffect(() => {
+    if (isLatexFile && compiledOutput && latexInstalled) {
+      compileLatex();
+    } else if (!isLatexFile) {
+      // Reset LaTeX-related state when switching to another file type.
+      setIsCompiling(false);
+      setCompilationStatus('');
+      setError('');
+      setCompilationLog('');
+      setPdfData('');
+    }
+  }, [compiledOutput, latexInstalled, isLatexFile, latexEngine, compileLatex]);
+
+  const handleZoomIn = () => {
+    setZoom(prev => Math.min(prev + 10, 200));
+  };
+
+  const handleZoomOut = () => {
+    setZoom(prev => Math.max(prev - 10, 50));
+  };
+
+  const handleRefresh = () => {
+    if (latexInstalled && isLatexFile) {
+      compileLatex();
+    }
+  };
+
+  const handleExportPDF = async () => {
+    if (!pdfData) {
+      setNotification({
+        isOpen: true,
+        title: 'No PDF Available',
+        message: 'Please compile your LaTeX document first before exporting.',
+        type: 'info',
+      });
+      return;
+    }
+
+    try {
+      const binary = atob(pdfData);
+      const array = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        array[i] = binary.charCodeAt(i);
+      }
+      const blob = new Blob([array], { type: 'application/pdf' });
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'document.pdf';
+      a.click();
+      URL.revokeObjectURL(url);
+
+      setNotification({
+        isOpen: true,
+        title: 'Export Successful',
+        message: 'PDF exported successfully!',
+        type: 'success',
+      });
+    } catch (exportError) {
+      console.error('PDF export error:', exportError);
+      setNotification({
+        isOpen: true,
+        title: 'Export Failed',
+        message: 'Failed to export PDF. Please try again.',
+        type: 'error',
+      });
+    }
+  };
+
+  const handleInstallLatex = async () => {
+    const { ipcRenderer } = window.require('electron');
+    await ipcRenderer.invoke('open-latex-download');
+  };
+
+  if (isMarkdownFile) {
+    return (
+      <div className="preview markdown-preview">
+        <div className="markdown-header">
+          <span>Markdown Preview</span>
+        </div>
+        <div className="markdown-body">
+          <ReactMarkdown>{content}</ReactMarkdown>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isLatexFile) {
+    return (
+      <div className="preview placeholder-preview">
+        <div className="placeholder-message">
+          <FiAlertCircle size={20} />
+          <span>Select a LaTeX or Markdown file to see a preview.</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (latexInstalled === false) {
+    return (
+      <div className="preview latex-install">
+        <div className="latex-status">
+          <FiAlertCircle size={28} />
+          <h3>LaTeX Distribution Not Found</h3>
+          <p>
+            Openotex requires a LaTeX distribution (MiKTeX, TeX Live, MacTeX) to compile documents.
+          </p>
+          <button type="button" className="latex-install-btn" onClick={handleInstallLatex}>
+            Download LaTeX Distribution
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="preview">
+      <div className="preview-header">
+        <div className="preview-status">
+          <span className="preview-title">
+            Preview {latexVersion ? `(${latexVersion})` : ''}
+          </span>
+          {isCompiling && (
+            <span className="preview-status-indicator">
+              {compilationStatus || 'Compiling…'}
+            </span>
+          )}
+        </div>
+        <div className="preview-controls">
+          <button type="button" title="Refresh" onClick={handleRefresh} disabled={isCompiling}>
+            <FiRefreshCw size={16} />
+          </button>
+          <button type="button" title="Zoom In" onClick={handleZoomIn}>
+            <FiZoomIn size={16} />
+          </button>
+          <button type="button" title="Zoom Out" onClick={handleZoomOut}>
+            <FiZoomOut size={16} />
+          </button>
+          <span className="preview-zoom">{zoom}%</span>
+          <button type="button" title="Export PDF" onClick={handleExportPDF}>
+            <FiDownload size={16} />
+          </button>
+        </div>
+      </div>
+      <div className="preview-body">
+        {pdfData ? (
+          <iframe
+            title="PDF Preview"
+            src={`data:application/pdf;base64,${pdfData}`}
+            style={{
+              width: '100%',
+              height: '100%',
+              border: 'none',
+              transform: `scale(${zoom / 100})`,
+              transformOrigin: 'top left'
+            }}
+          />
+        ) : (
+          <div className="preview-empty">
+            <p>No PDF compiled yet.</p>
+          </div>
+        )}
+      </div>
+      {error && (
+        <div className="preview-error">
+          <h4>Compilation Error</h4>
+          <pre>{error}</pre>
+          <details>
+            <summary>View Full Log</summary>
+            <pre>{compilationLog}</pre>
+          </details>
+        </div>
+      )}
+      <NotificationDialog
+        isOpen={notification.isOpen}
+        title={notification.title}
+        message={notification.message}
+        type={notification.type}
+        onClose={() => setNotification(prev => ({ ...prev, isOpen: false }))}
+      />
+    </div>
+  );
+};
+
+export default Preview;

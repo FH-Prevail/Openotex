@@ -1,0 +1,87 @@
+{
+  "name": "openotex",
+  "version": "1.0.0",
+  "description": "A modern, open-source LaTeX editor for desktop",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "cross-env NODE_ENV=development electron .",
+    "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:main\" \"npm run dev:electron\"",
+    "dev:renderer": "webpack serve --config webpack.renderer.config.js",
+    "dev:main": "webpack --config webpack.main.config.js --watch",
+    "dev:electron": "wait-on -t 120000 http-get://localhost:3000 && cross-env NODE_ENV=development electron .",
+    "build": "npm run build:main && npm run build:renderer",
+    "build:main": "cross-env NODE_ENV=production webpack --config webpack.main.config.js",
+    "build:renderer": "cross-env NODE_ENV=production webpack --config webpack.renderer.config.js",
+    "package": "npm run build && electron-builder"
+  },
+  "keywords": [
+    "latex",
+    "editor",
+    "electron",
+    "overleaf"
+  ],
+  "author": "Openotex Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.42",
+    "@types/react-dom": "^18.2.17",
+    "concurrently": "^8.2.2",
+    "copy-webpack-plugin": "^13.0.1",
+    "cross-env": "^10.1.0",
+    "css-loader": "^6.8.1",
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "html-webpack-plugin": "^5.5.4",
+    "monaco-editor-webpack-plugin": "^7.1.1",
+    "style-loader": "^3.3.3",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "wait-on": "^9.0.1",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^4.15.1"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "@types/d3": "^7.4.3",
+    "@types/js-yaml": "^4.0.9",
+    "d3": "^7.9.0",
+    "html2pdf.js": "^0.12.1",
+    "js-yaml": "^4.1.0",
+    "jszip": "^3.10.1",
+    "latex.js": "^0.12.6",
+    "mathjax-full": "^3.2.1",
+    "monaco-editor": "^0.54.0",
+    "pdfjs-dist": "^3.11.174",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-icons": "^4.12.0",
+    "react-markdown": "^10.1.0",
+    "react-pdf": "^7.6.0",
+    "react-resizable-panels": "^1.0.9",
+    "react-split": "^2.0.14"
+  },
+  "build": {
+    "appId": "com.openotex.app",
+    "productName": "Openotex",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/openotex-icon.png"
+    },
+    "mac": {
+      "icon": "assets/openotex-icon.png"
+    },
+    "linux": {
+      "icon": "assets/openotex-icon.png",
+      "target": "AppImage"
+    }
+  }
+}
