@@ -1,17 +1,19 @@
 {
   "name": "openotex",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A modern, open-source LaTeX editor for desktop",
   "main": "dist/main.js",
   "scripts": {
     "start": "cross-env NODE_ENV=development electron .",
-    "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:main\" \"npm run dev:electron\"",
+    "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:main\" \"npm run dev:preload\" \"npm run dev:electron\"",
     "dev:renderer": "webpack serve --config webpack.renderer.config.js",
     "dev:main": "webpack --config webpack.main.config.js --watch",
+    "dev:preload": "webpack --config webpack.preload.config.js --watch",
     "dev:electron": "wait-on -t 120000 http-get://localhost:3000 && cross-env NODE_ENV=development electron .",
-    "build": "npm run build:main && npm run build:renderer",
+    "build": "npm run build:main && npm run build:renderer && npm run build:preload",
     "build:main": "cross-env NODE_ENV=production webpack --config webpack.main.config.js",
     "build:renderer": "cross-env NODE_ENV=production webpack --config webpack.renderer.config.js",
+    "build:preload": "cross-env NODE_ENV=production webpack --config webpack.preload.config.js",
     "package": "npm run build && electron-builder"
   },
   "keywords": [

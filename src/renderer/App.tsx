@@ -285,14 +285,14 @@ const App: React.FC = () => {
             }
 
             // Only create metadata for LaTeX-related files
-            const pathModule = window.require('path');
+            const pathModule = (window as any).api.path;
             const fileExt = pathModule.extname(filePath).toLowerCase();
             const latexExtensions = ['.tex', '.latex', '.bib', '.cls', '.sty', '.bst', '.dtx', '.ins'];
             if (!latexExtensions.includes(fileExt)) {
                 return;
             }
 
-            const { ipcRenderer } = window.require('electron');
+            const api = (window as any).api;
             const metadataPath = `${filePath}.metadata`;
             const metadata = {
                 version: '1.0',
@@ -305,7 +305,7 @@ const App: React.FC = () => {
                     createdAt: ann.createdAt,
                 })),
             };
-            await ipcRenderer.invoke('write-file', metadataPath, JSON.stringify(metadata, null, 2));
+            await api.writeFile( metadataPath, JSON.stringify(metadata, null, 2));
         }
         catch (error) {
             console.error('Error saving metadata:', error);
@@ -320,16 +320,16 @@ const App: React.FC = () => {
             }
 
             // Only load metadata for LaTeX-related files
-            const pathModule = window.require('path');
+            const pathModule = (window as any).api.path;
             const fileExt = pathModule.extname(filePath).toLowerCase();
             const latexExtensions = ['.tex', '.latex', '.bib', '.cls', '.sty', '.bst', '.dtx', '.ins'];
             if (!latexExtensions.includes(fileExt)) {
                 return [];
             }
 
-            const { ipcRenderer } = window.require('electron');
+            const api = (window as any).api;
             const metadataPath = `${filePath}.metadata`;
-            const result = await ipcRenderer.invoke('read-file', metadataPath);
+            const result = await api.readFile( metadataPath);
             if (result.success && result.content) {
                 const metadata = JSON.parse(result.content);
                 return metadata.annotations || [];
@@ -373,8 +373,8 @@ const App: React.FC = () => {
         });
     }, [setNotification]);
     const handleOpenProject = async () => {
-        const { ipcRenderer } = window.require('electron');
-        const result = await ipcRenderer.invoke('open-directory-dialog');
+        const api = (window as any).api;
+        const result = await api.openDirectoryDialog();
         if (result.success && !result.canceled && result.filePaths.length > 0) {
             restoredSessionProjectRef.current = null;
             cursorPositionsRef.current = new Map();
@@ -396,14 +396,14 @@ const App: React.FC = () => {
         // Save and close all open files
         if (currentFile && openTabs.length > 0) {
             // Save current file
-            const { ipcRenderer } = window.require('electron');
+            const api = (window as any).api;
             if (autoSave) {
-                await ipcRenderer.invoke('write-file', currentFile.path, editorContent);
+                await api.writeFile( currentFile.path, editorContent);
             }
 
             // Save all tab contents
             for (const [filePath, content] of tabContents.entries()) {
-                await ipcRenderer.invoke('write-file', filePath, content);
+                await api.writeFile( filePath, content);
             }
 
             // Save annotations
@@ -429,12 +429,12 @@ const App: React.FC = () => {
 
     const handleCreateNewProject = async (projectName: string, directory: string) => {
         try {
-            const { ipcRenderer } = window.require('electron');
-            const pathModule = window.require('path');
+            const api = (window as any).api;
+            const pathModule = (window as any).api.path;
 
             // Create project directory
             const projectPath = pathModule.join(directory, projectName);
-            const createDirResult = await ipcRenderer.invoke('create-directory', projectPath);
+            const createDirResult = await api.createDirectory( projectPath);
 
             if (!createDirResult.success) {
                 showNotification('Error', `Failed to create project directory: ${createDirResult.error}`, 'error');
@@ -473,7 +473,7 @@ Your conclusions go here.
 \\end{document}
 `;
 
-            const writeResult = await ipcRenderer.invoke('write-file', mainTexPath, latexTemplate);
+            const writeResult = await api.writeFile( mainTexPath, latexTemplate);
 
             if (!writeResult.success) {
                 showNotification('Error', `Failed to create main.tex: ${writeResult.error}`, 'error');
@@ -509,13 +509,13 @@ Your conclusions go here.
     };
     const handleSaveFolderAsZip = useCallback(async (folderPath: string) => {
         try {
-            const { ipcRenderer } = window.require('electron');
-            const path = window.require('path');
+            const api = (window as any).api;
+            const path = (window as any).api.path;
             const folderName = path.basename(folderPath);
             const zip = new JSZip();
             const rootFolder = zip.folder(folderName) ?? zip;
             const addFilesToZip = async (sourcePath: string, destination: JSZip) => {
-                const result = await ipcRenderer.invoke('read-directory', sourcePath);
+                const result = await api.readDirectory( sourcePath);
                 if (!result.success) {
                     return;
                 }
@@ -525,7 +525,7 @@ Your conclusions go here.
                         await addFilesToZip(file.path, childFolder);
                     }
                     else {
-                        const fileResult = await ipcRenderer.invoke('read-file-base64', file.path);
+                        const fileResult = await api.readFileBase64( file.path);
                         if (fileResult.success && fileResult.data) {
                             destination.file(file.name, fileResult.data, { base64: true });
                         }
@@ -535,7 +535,7 @@ Your conclusions go here.
             await addFilesToZip(folderPath, rootFolder);
             const zipContent = await zip.generateAsync({ type: 'base64' });
             const defaultPath = path.join(path.dirname(folderPath), `${folderName}.zip`);
-            const saveResult = await ipcRenderer.invoke('save-zip-file', {
+            const saveResult = await (window as any).api.saveZipFile({
                 defaultPath,
                 data: zipContent,
             });
@@ -596,11 +596,11 @@ Your conclusions go here.
             return;
         }
         try {
-            const pathModule = window.require('path');
-            const { ipcRenderer } = window.require('electron');
+            const pathModule = (window as any).api.path;
+            const api = (window as any).api;
             const sessionPath = pathModule.join(projectPath, SESSION_FILENAME);
             if (openTabs.length === 0) {
-                await ipcRenderer.invoke('delete-file', sessionPath);
+                await api.deletePath( sessionPath);
                 cursorPositionsRef.current = new Map();
                 return;
             }
@@ -615,7 +615,7 @@ Your conclusions go here.
                 })),
             };
             const yamlString = yamlDump(payload, { skipInvalid: true }) || '';
-            await ipcRenderer.invoke('write-file', sessionPath, yamlString);
+            await api.writeFile( sessionPath, yamlString);
         }
         catch (error) {
             console.warn('Unable to persist session state', error);
@@ -632,12 +632,12 @@ Your conclusions go here.
             return;
         }
         restoredSessionProjectRef.current = projectRoot;
-        const pathModule = window.require('path');
-        const { ipcRenderer } = window.require('electron');
+        const pathModule = (window as any).api.path;
+        const api = (window as any).api;
         const sessionPath = pathModule.join(projectRoot, SESSION_FILENAME);
         let yamlText = null;
         try {
-            const result = await ipcRenderer.invoke('read-file', sessionPath);
+            const result = await api.readFile( sessionPath);
             if (!result.success || !result.content) {
                 cursorPositionsRef.current = new Map();
                 return;
@@ -671,7 +671,7 @@ Your conclusions go here.
         const missingPaths = [];
         for (const filePath of tabPaths) {
             try {
-                const result = await ipcRenderer.invoke('read-file', filePath);
+                const result = await api.readFile( filePath);
                 if (!result.success) {
                     missingPaths.push(filePath);
                     continue;
@@ -809,8 +809,8 @@ Your conclusions go here.
         }
         else {
             // Open new tab
-            const { ipcRenderer } = window.require('electron');
-            const result = await ipcRenderer.invoke('read-file', file.path);
+            const api = (window as any).api;
+            const result = await api.readFile( file.path);
             if (result.success) {
                 // Load annotations from metadata file
                 const loadedAnnotations = await loadAnnotationsFromFile(file.path);
@@ -1135,10 +1135,10 @@ Your conclusions go here.
         editorRef.current?.revealRange(annotation.range);
     }, []);
     const handleInstallPackage = async (packageName: string): Promise<void> => {
-        const { ipcRenderer } = window.require('electron');
+        const api = (window as any).api;
         try {
             showNotification('Installing Package', `Installing ${packageName}...`, 'info');
-            const result = await ipcRenderer.invoke('install-latex-package', packageName);
+            const result = await api.installLatexPackage( packageName);
             if (result.success) {
                 showNotification('Package Installed', `${packageName} installed successfully!`, 'success');
                 setMissingPackages(prev => prev.filter(pkg => pkg !== packageName));
@@ -1152,12 +1152,12 @@ Your conclusions go here.
         }
     };
     const handleInstallAllPackages = async (): Promise<void> => {
-        const { ipcRenderer } = window.require('electron');
+        const api = (window as any).api;
         const remaining = new Set(missingPackages);
         for (const pkg of missingPackages) {
             try {
                 showNotification('Installing Package', `Installing ${pkg}...`, 'info');
-                const result = await ipcRenderer.invoke('install-latex-package', pkg);
+                const result = await api.installLatexPackage( pkg);
                 if (result.success) {
                     remaining.delete(pkg);
                 }
@@ -1183,13 +1183,13 @@ Your conclusions go here.
         setShowPackageDialog(true);
     }, []);
     useEffect(() => {
-        const { ipcRenderer } = window.require('electron');
+        const api = (window as any).api;
         let disposed = false;
         const validateDirectory = async (dirPath: string | undefined): Promise<string | null> => {
             if (!dirPath)
                 return null;
             try {
-                const result = await ipcRenderer.invoke('read-directory', dirPath);
+                const result = await api.readDirectory( dirPath);
                 if (result.success) {
                     return dirPath;
                 }
@@ -1209,7 +1209,14 @@ Your conclusions go here.
                     return null;
                 }
             })();
-            const candidates = [storedPath, process.cwd()];
+            // In a sandboxed renderer there is no process.cwd().
+            // Use stored path first, then fall back to the OS default projects directory.
+            let defaultDir: string | null = null;
+            try {
+                const def = await (window as any).api.getDefaultProjectsDirectory();
+                if (def?.success) defaultDir = def.path;
+            } catch {}
+            const candidates = [storedPath, defaultDir];
             for (const candidate of candidates) {
                 const validPath = await validateDirectory(candidate || undefined);
                 if (validPath && !disposed) {
@@ -1238,8 +1245,8 @@ Your conclusions go here.
                     setDefaultProjectsDirectory(savedDirectory);
                 } else {
                     // Otherwise, get the OS default
-                    const { ipcRenderer } = window.require('electron');
-                    const result = await ipcRenderer.invoke('get-default-projects-directory');
+                    const api = (window as any).api;
+                    const result = await api.getDefaultProjectsDirectory();
                     if (result.success) {
                         setDefaultProjectsDirectory(result.path);
                     }
@@ -1331,8 +1338,8 @@ Your conclusions go here.
                                 );
 
                                 if (userWantsUpdate) {
-                                    const { shell } = window.require('electron');
-                                    await shell.openExternal(DOWNLOAD_PAGE_URL);
+                                    
+                                    await (window as any).api.openExternal(DOWNLOAD_PAGE_URL);
                                 }
                             }
                         } catch (error) {
@@ -1378,8 +1385,8 @@ Your conclusions go here.
         }
         // Auto-save
         if (autoSave && currentFile && !currentFile.isDirectory) {
-            const { ipcRenderer } = window.require('electron');
-            ipcRenderer.invoke('write-file', currentFile.path, content);
+            const api = (window as any).api;
+            api.writeFile( currentFile.path, content);
         }
         if (!isCurrentFileLatex) {
             if (autoCompileTimeout.current) {
@@ -1413,8 +1420,8 @@ Your conclusions go here.
         }
 
         try {
-            const { ipcRenderer } = window.require('electron');
-            await ipcRenderer.invoke('write-file', currentFile.path, editorContent);
+            const api = (window as any).api;
+            await api.writeFile( currentFile.path, editorContent);
             showNotification('File Saved', `Saved ${currentFile.name}`, 'success');
         } catch (error) {
             showNotification('Save Failed', `Failed to save ${currentFile.name}: ${error}`, 'error');
@@ -1428,19 +1435,19 @@ Your conclusions go here.
         }
 
         try {
-            const { ipcRenderer } = window.require('electron');
+            const api = (window as any).api;
             let savedCount = 0;
 
             // Save current file first
             if (currentFile && !currentFile.isDirectory) {
-                await ipcRenderer.invoke('write-file', currentFile.path, editorContent);
+                await api.writeFile( currentFile.path, editorContent);
                 savedCount++;
             }
 
             // Save all other open tabs
             for (const [filePath, content] of tabContents.entries()) {
                 if (filePath !== currentFile?.path) {
-                    await ipcRenderer.invoke('write-file', filePath, content);
+                    await api.writeFile( filePath, content);
                     savedCount++;
                 }
             }
@@ -1477,8 +1484,8 @@ Your conclusions go here.
         }
 
         try {
-            const { ipcRenderer } = window.require('electron');
-            const pathModule = window.require('path');
+            const api = (window as any).api;
+            const pathModule = (window as any).api.path;
 
             // Get file info
             const fileDir = pathModule.dirname(targetFile.path);
@@ -1491,7 +1498,7 @@ Your conclusions go here.
             const timelineFolderPath = pathModule.join(fileDir, timelineFolderName);
 
             // Create timeline folder if it doesn't exist
-            const createDirResult = await ipcRenderer.invoke('create-directory', timelineFolderPath);
+            const createDirResult = await api.createDirectory( timelineFolderPath);
             if (!createDirResult.success && !createDirResult.error?.includes('already exists')) {
                 showNotification('Version Freeze Failed', `Failed to create timeline folder: ${createDirResult.error}`, 'error');
                 return;
@@ -1516,7 +1523,7 @@ Your conclusions go here.
             if (targetFile.path === currentFile?.path) {
                 contentToSave = editorContent;
             } else {
-                const readResult = await ipcRenderer.invoke('read-file', targetFile.path);
+                const readResult = await api.readFile( targetFile.path);
                 if (!readResult.success) {
                     showNotification('Version Freeze Failed', `Failed to read file: ${readResult.error}`, 'error');
                     return;
@@ -1525,7 +1532,7 @@ Your conclusions go here.
             }
 
             // Save versioned file
-            const writeResult = await ipcRenderer.invoke('write-file', versionedFilePath, contentToSave);
+            const writeResult = await api.writeFile( versionedFilePath, contentToSave);
             if (!writeResult.success) {
                 showNotification('Version Freeze Failed', `Failed to save version: ${writeResult.error}`, 'error');
                 return;
@@ -1643,12 +1650,12 @@ Your conclusions go here.
         if (!autoSave || !projectPath)
             return;
         const autoSaveInterval = setInterval(async () => {
-            const { ipcRenderer } = window.require('electron');
-            const path = window.require('path');
+            const api = (window as any).api;
+            const path = (window as any).api.path;
             try {
                 // Get all LaTeX-related files in the project directory
                 const getAllFiles = async (dirPath: string): Promise<string[]> => {
-                    const result = await ipcRenderer.invoke('read-directory', dirPath);
+                    const result = await api.readDirectory( dirPath);
                     if (!result.success)
                         return [];
                     const files: string[] = [];
@@ -1672,14 +1679,14 @@ Your conclusions go here.
                 // Save all files that are currently open in tabs
                 for (const [filePath, content] of tabContents.entries()) {
                     if (latexFiles.includes(filePath)) {
-                        await ipcRenderer.invoke('write-file', filePath, content);
+                        await api.writeFile( filePath, content);
                     }
                 }
                 // Also save the current file if it's not already saved
                 if (currentFile && !currentFile.isDirectory) {
                     const ext = path.extname(currentFile.name).toLowerCase();
                     if (['.tex', '.bib', '.cls', '.sty', '.bst', '.dtx', '.ins'].includes(ext)) {
-                        await ipcRenderer.invoke('write-file', currentFile.path, editorContent);
+                        await api.writeFile( currentFile.path, editorContent);
                     }
                 }
             }
@@ -1860,3 +1867,4 @@ Your conclusions go here.
 };
 
 export default App;
+

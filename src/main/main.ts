@@ -1,13 +1,72 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, Menu, MenuItemConstructorOptions } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { exec, execSync, spawn, ChildProcessWithoutNullStreams } from 'child_process';
-import { promisify } from 'util';
+import { execFile, spawn, ChildProcessWithoutNullStreams } from 'child_process';
+// no util.promisify needed after switching to execFile/spawn helpers
 
-const execAsync = promisify(exec);
+// execFile promise wrapper to avoid shell interpolation
+const execFileAsync = (
+  file: string,
+  args: readonly string[] = [],
+  options: any = {}
+): Promise<{ stdout: string; stderr: string }> => {
+  return new Promise((resolve, reject) => {
+    const finalOptions = { ...(options || {}), encoding: 'utf8' };
+    const child = execFile(file, args as string[], finalOptions as any, (error, stdout: any, stderr: any) => {
+      const out = typeof stdout === 'string' ? stdout : (stdout ? stdout.toString('utf8') : '');
+      const err = typeof stderr === 'string' ? stderr : (stderr ? stderr.toString('utf8') : '');
+      if (error) {
+        (error as any).stdout = out;
+        (error as any).stderr = err;
+        reject(error);
+        return;
+      }
+      resolve({ stdout: out, stderr: err });
+    });
+  });
+};
+
+// spawn collector with timeout
+const spawnCollect = (command: string, args: string[], options: any = {}, timeoutMs = 120000): Promise<{ stdout: string; stderr: string; code: number | null }> => {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { ...options, stdio: 'pipe' }) as ChildProcessWithoutNullStreams;
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        try { child.kill(); } catch {}
+      }
+    }, timeoutMs);
+
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      (err as any).stdout = stdout;
+      (err as any).stderr = stderr;
+      reject(err);
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      if (code && code !== 0) {
+        const error: any = new Error(`Process exited with code ${code}`);
+        error.stdout = stdout; error.stderr = stderr; error.code = code;
+        reject(error);
+      } else {
+        resolve({ stdout, stderr, code });
+      }
+    });
+  });
+};
 
 let mainWindow: BrowserWindow | null = null;
-const terminalSessions = new Map<number, ChildProcessWithoutNullStreams>();
+// Git-only terminal sessions (stores running process and cwd per sender)
+const gitTerminalSessions = new Map<number, { cwd: string; proc: ChildProcessWithoutNullStreams | null }>();
 
 const pathExists = async (targetPath: string): Promise<boolean> => {
   try {
@@ -147,7 +206,7 @@ const getDefaultShell = () => {
 
 const detectLatexDistribution = async (): Promise<'miktex' | 'texlive' | 'unknown'> => {
   try {
-    const { stdout } = await execAsync('pdflatex --version');
+    const { stdout } = await execFileAsync('pdflatex', ['--version']);
     const normalized = stdout.toLowerCase();
     if (normalized.includes('miktex')) {
       return 'miktex';
@@ -173,9 +232,11 @@ function createWindow() {
     title: 'Openotex',
     icon: iconPath,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      webSecurity: false
+      preload: path.join(app.getAppPath(), 'dist', 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+      webSecurity: true
     },
     titleBarStyle: 'default',
     backgroundColor: '#1e1e1e',
@@ -213,13 +274,32 @@ function createWindow() {
   // Load the app
   const isDev = !app.isPackaged;
 
+  const loadDist = () => {
+    const filePath = path.join(appPath, 'dist', 'index.html');
+    console.log('Loading production file:', filePath);
+    mainWindow!.loadFile(filePath).catch(err => {
+      console.error('Failed to load dist/index.html:', err);
+    });
+  };
+
   if (isDev) {
-    console.log('Loading dev URL: http://localhost:3000');
-    mainWindow.loadURL('http://localhost:3000');
-    // Open DevTools automatically for debugging
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
+    const devUrl = 'http://localhost:3000';
+    console.log('Loading dev URL:', devUrl);
+    mainWindow.loadURL(devUrl).catch(err => {
+      console.warn('Dev server not available, falling back to dist. Error:', err);
+      loadDist();
+    });
+    // If dev server fails to load, fallback automatically
+    mainWindow.webContents.once('did-fail-load', () => {
+      console.warn('did-fail-load from dev URL. Falling back to dist.');
+      loadDist();
+    });
+    // Open DevTools only when explicitly requested
+    if (process.env.OPENOTEX_DEBUG === 'true') {
+      try { mainWindow.webContents.openDevTools({ mode: 'detach' }); } catch {}
+    }
   } else {
-    mainWindow.loadFile(path.join(appPath, 'dist', 'index.html'));
+    loadDist();
   }
 
   if (process.env.OPENOTEX_DEBUG === 'true') {
@@ -231,15 +311,15 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => {
-    // Clean up all terminal sessions when window closes
-    terminalSessions.forEach(session => {
+    // Clean up all git terminal sessions when window closes
+    gitTerminalSessions.forEach(({ proc }) => {
       try {
-        session.kill();
+        proc?.kill();
       } catch (error) {
-        console.error('Error killing terminal session:', error);
+        console.error('Error killing git terminal process:', error);
       }
     });
-    terminalSessions.clear();
+    gitTerminalSessions.clear();
     mainWindow = null;
   });
 }
@@ -259,10 +339,10 @@ app.on('activate', () => {
 });
 
 app.on('before-quit', () => {
-  terminalSessions.forEach(session => {
-    session.kill();
+  gitTerminalSessions.forEach(({ proc }) => {
+    try { proc?.kill(); } catch {}
   });
-  terminalSessions.clear();
+  gitTerminalSessions.clear();
 });
 
 // IPC Handlers for file operations
@@ -406,82 +486,79 @@ ipcMain.handle('read-binary-file', async (_event, filePath: string) => {
   }
 });
 
-ipcMain.handle('terminal-start', async (event, options: { cwd?: string } = {}) => {
+// Git-only terminal API
+ipcMain.handle('git-terminal-start', async (event, options: { cwd?: string } = {}) => {
   const senderId = event.sender.id;
-  const existing = terminalSessions.get(senderId);
-  if (existing) {
-    if (existing.exitCode !== null || existing.killed) {
-      terminalSessions.delete(senderId);
-    } else {
-      return { success: true, shell: getDefaultShell().displayName };
-    }
-  }
-
-  try {
-    const shellInfo = getDefaultShell();
-    const terminalProcess = spawn(shellInfo.command, shellInfo.args, {
-      cwd: options.cwd || process.cwd(),
-      env: process.env,
-      stdio: 'pipe',
-    }) as ChildProcessWithoutNullStreams;
-
-    terminalSessions.set(senderId, terminalProcess);
-
-    terminalProcess.stdout.on('data', data => {
-      // Check if sender is still valid before sending
-      if (!event.sender.isDestroyed()) {
-        event.sender.send('terminal-data', data.toString());
-      }
-    });
-
-    terminalProcess.stderr.on('data', data => {
-      // Check if sender is still valid before sending
-      if (!event.sender.isDestroyed()) {
-        event.sender.send('terminal-data', data.toString());
-      }
-    });
-
-    terminalProcess.on('exit', code => {
-      // Check if sender is still valid before sending
-      if (!event.sender.isDestroyed()) {
-        event.sender.send('terminal-exit', code);
-      }
-      terminalSessions.delete(senderId);
-    });
-
-    terminalProcess.on('error', error => {
-      // Check if sender is still valid before sending
-      if (!event.sender.isDestroyed()) {
-        event.sender.send('terminal-data', `\n${(error as Error).message}\n`);
-        event.sender.send('terminal-exit', null);
-      }
-      terminalSessions.delete(senderId);
-    });
-
-    return { success: true, shell: shellInfo.displayName };
-  } catch (error) {
-    return {
-      success: false,
-      error: (error as Error).message || 'Failed to start shell process',
-    };
-  }
+  gitTerminalSessions.set(senderId, { cwd: options.cwd || process.cwd(), proc: null });
+  return { success: true, shell: 'Git Terminal' };
 });
 
-ipcMain.handle('terminal-stop', async (event) => {
+ipcMain.handle('git-terminal-stop', async (event) => {
   const senderId = event.sender.id;
-  const session = terminalSessions.get(senderId);
-  if (session) {
-    session.kill();
-    terminalSessions.delete(senderId);
-  }
+  const session = gitTerminalSessions.get(senderId);
+  try {
+    session?.proc?.kill();
+  } catch {}
+  if (session) session.proc = null;
   return { success: true };
 });
 
-ipcMain.on('terminal-write', (event, data: string) => {
+ipcMain.handle('git-terminal-run', async (event, payload: { command: string }) => {
   const senderId = event.sender.id;
-  const session = terminalSessions.get(senderId);
-  if (session && !session.killed) {
-    session.stdin.write(data);
+  const session = gitTerminalSessions.get(senderId) || { cwd: process.cwd(), proc: null };
+  gitTerminalSessions.set(senderId, session);
+
+  const raw = (payload?.command || '').trim();
+  if (!/^git(\s|$)/i.test(raw)) {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('git-terminal-data', 'Only git commands are allowed.\n');
+      event.sender.send('git-terminal-exit', 1);
+    }
+    return { success: false, error: 'Only git commands are allowed.' };
+  }
+
+  // Parse command into args: naive split respecting quotes
+  const args = raw.split(' ').slice(1).filter(Boolean);
+
+  try {
+    const child = spawn(process.platform === 'win32' ? 'git.exe' : 'git', args, {
+      cwd: session.cwd,
+      env: process.env,
+      stdio: 'pipe'
+    }) as ChildProcessWithoutNullStreams;
+    session.proc = child;
+
+    child.stdout.on('data', (data) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('git-terminal-data', data.toString());
+      }
+    });
+    child.stderr.on('data', (data) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('git-terminal-data', data.toString());
+      }
+    });
+    child.on('exit', (code) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('git-terminal-exit', code);
+      }
+      session.proc = null;
+    });
+    child.on('error', (err) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('git-terminal-data', `Error: ${(err as Error).message}\n`);
+        event.sender.send('git-terminal-exit', 1);
+      }
+      session.proc = null;
+    });
+
+    return { success: true };
+  } catch (error) {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send('git-terminal-data', `Error starting git: ${(error as Error).message}\n`);
+      event.sender.send('git-terminal-exit', 1);
+    }
+    return { success: false, error: (error as Error).message };
   }
 });
 
@@ -532,7 +609,7 @@ ipcMain.handle('get-default-projects-directory', async () => {
 ipcMain.handle('check-latex-installation', async () => {
   try {
     // Try to find pdflatex
-    const { stdout } = await execAsync('pdflatex --version');
+    const { stdout } = await execFileAsync('pdflatex', ['--version']);
 
     // Detect distribution
     let distribution = 'unknown';
@@ -561,8 +638,8 @@ ipcMain.handle('check-latex-installation', async () => {
 // Check if a specific package is installed
 ipcMain.handle('check-package-installed', async (event, packageName: string) => {
   try {
-    // Use kpsewhich to check if package exists
-    const { stdout } = await execAsync(`kpsewhich ${packageName}.sty`);
+    // Use kpsewhich to check if package exists (safe args)
+    const { stdout } = await execFileAsync('kpsewhich', [`${packageName}.sty`]);
     return {
       success: true,
       installed: stdout.trim().length > 0,
@@ -579,40 +656,24 @@ ipcMain.handle('check-package-installed', async (event, packageName: string) => 
 // Install LaTeX package
 ipcMain.handle('install-latex-package', async (event, packageName: string) => {
   try {
+    if (!/^[A-Za-z0-9._-]+$/.test(packageName)) {
+      return { success: false, error: 'Invalid package name.' };
+    }
     const distribution = await detectLatexDistribution();
 
     if (distribution === 'miktex') {
       // MiKTeX package manager
-      const command = process.platform === 'win32'
-        ? `mpm --install=${packageName}`
-        : `miktex packages install ${packageName}`;
-
-      const { stdout, stderr } = await execAsync(command, {
-        timeout: 120000 // 2 minutes timeout
-      });
-
-      return {
-        success: true,
-        message: `Package ${packageName} installed successfully`,
-        output: stdout,
-        distribution: 'miktex'
-      };
+      if (process.platform === 'win32') {
+        const { stdout } = await execFileAsync('mpm', [ `--install=${packageName}` ], { timeout: 120000 });
+        return { success: true, message: `Package ${packageName} installed successfully`, output: stdout, distribution: 'miktex' };
+      } else {
+        const { stdout } = await execFileAsync('miktex', [ 'packages', 'install', packageName ], { timeout: 120000 });
+        return { success: true, message: `Package ${packageName} installed successfully`, output: stdout, distribution: 'miktex' };
+      }
     } else if (distribution === 'texlive') {
       // TeX Live package manager (tlmgr)
-      const command = process.platform === 'win32'
-        ? `tlmgr install ${packageName}`
-        : `sudo tlmgr install ${packageName}`;
-
-      const { stdout, stderr } = await execAsync(command, {
-        timeout: 120000 // 2 minutes timeout
-      });
-
-      return {
-        success: true,
-        message: `Package ${packageName} installed successfully`,
-        output: stdout,
-        distribution: 'texlive'
-      };
+      const { stdout } = await execFileAsync('tlmgr', [ 'install', packageName ], { timeout: 120000 });
+      return { success: true, message: `Package ${packageName} installed successfully`, output: stdout, distribution: 'texlive' };
     } else {
       return {
         success: false,
@@ -633,6 +694,20 @@ ipcMain.handle('install-latex-package', async (event, packageName: string) => {
 ipcMain.handle('open-latex-download', async () => {
   try {
     await shell.openExternal('https://www.latex-project.org/get/');
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+// Open an external URL (used by About dialog, etc.)
+ipcMain.handle('open-external', async (_event, url: string) => {
+  try {
+    // Basic allowlist: only http/https protocols
+    if (!/^https?:\/\//i.test(url)) {
+      return { success: false, error: 'Blocked non-HTTP(S) URL' };
+    }
+    await shell.openExternal(url);
     return { success: true };
   } catch (error) {
     return { success: false, error: (error as Error).message };
@@ -727,19 +802,13 @@ const needsRecompilation = (output: string): boolean => {
 const installLatexFonts = async (): Promise<{ success: boolean; message: string }> => {
   try {
     console.log('Installing EC fonts package...');
-    await execAsync('mpm --install=ec', {
-      timeout: 120000 // 2 minutes for package installation
-    });
+    await execFileAsync('mpm', ['--install=ec'], { timeout: 120000 });
 
     console.log('Installing CM-Super fonts package...');
-    await execAsync('mpm --install=cm-super', {
-      timeout: 120000
-    });
+    await execFileAsync('mpm', ['--install=cm-super'], { timeout: 120000 });
 
     console.log('Refreshing MiKTeX file database...');
-    await execAsync('initexmf --update-fndb', {
-      timeout: 60000
-    });
+    await execFileAsync('initexmf', ['--update-fndb'], { timeout: 60000 });
 
     return {
       success: true,
@@ -758,14 +827,13 @@ const installLatexFonts = async (): Promise<{ success: boolean; message: string 
 const installLatexPackage = async (packageName: string): Promise<{ success: boolean; message: string }> => {
   try {
     console.log(`Installing LaTeX package: ${packageName}`);
-    await execAsync(`mpm --install=${packageName}`, {
-      timeout: 120000 // 2 minutes for package installation
-    });
+    if (!/^[A-Za-z0-9._-]+$/.test(packageName)) {
+      return { success: false, message: 'Invalid package name.' };
+    }
+    await execFileAsync('mpm', [ `--install=${packageName}` ], { timeout: 120000 });
 
     console.log('Refreshing MiKTeX file database...');
-    await execAsync('initexmf --update-fndb', {
-      timeout: 60000
-    });
+    await execFileAsync('initexmf', ['--update-fndb'], { timeout: 60000 });
 
     return {
       success: true,
@@ -796,19 +864,25 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
     process.env.MIKTEX_AUTOINSTALL = '1';
     process.env.MIKTEX_ENABLE_INSTALLER = '1';
 
-    const latexCommand = `${engine} -interaction=nonstopmode -halt-on-error -synctex=1 -output-directory="${dir}" "${texFilePath}"`;
+    const allowedEngines = ['pdflatex', 'xelatex', 'lualatex'] as const;
+    if (!allowedEngines.includes(engine as any)) {
+      engine = 'pdflatex';
+    }
+    const args = [
+      '-interaction=nonstopmode',
+      '-halt-on-error',
+      '-synctex=1',
+      `-output-directory=${dir}`,
+      texFilePath
+    ];
 
-    console.log('Compiling LaTeX with', engine + ':', latexCommand);
+    console.log('Compiling LaTeX with', engine, 'args:', args.join(' '));
 
     const runLatexEngine = async () => {
-      return execAsync(latexCommand, {
-        cwd: dir,
-        timeout: 120000, // 120 seconds (2 minutes) timeout for large documents
-        maxBuffer: 1024 * 1024 * 10, // 10MB buffer
-      });
+      return spawnCollect(engine, args, { cwd: dir }, 120000);
     };
 
-    let currentAttempt;
+    let currentAttempt: { stdout: string; stderr: string } | undefined;
     let attemptCount = 0;
     const maxAttempts = 5; // Maximum compilation attempts
     let installedPackages = new Set<string>(); // Track installed packages to avoid loops
@@ -971,13 +1045,8 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
     try {
       const auxContent = await fs.readFile(auxPath, 'utf-8');
       if (auxContent.includes('\\bibdata') || auxContent.includes('\\citation')) {
-        const bibtexCommand = `bibtex "${filename}"`;
-        console.log('Running BibTeX:', bibtexCommand);
-        const { stdout: bibStdout, stderr: bibStderr } = await execAsync(bibtexCommand, {
-          cwd: dir,
-          timeout: 60000, // 60 seconds for BibTeX
-          maxBuffer: 1024 * 1024 * 10,
-        });
+        console.log('Running BibTeX:', filename);
+        const { stdout: bibStdout, stderr: bibStderr } = await execFileAsync('bibtex', [filename], { cwd: dir });
         combinedStdout += `\n\n[BibTeX]\n${bibStdout}`;
         combinedStderr += `\n\n[BibTeX]\n${bibStderr}`;
         ranBibtex = true;

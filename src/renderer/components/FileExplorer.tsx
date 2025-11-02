@@ -94,8 +94,7 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
   }, [refreshTrigger, projectPath]);
 
   const loadDirectory = async (dirPath: string, parentNode?: FileNode) => {
-    const { ipcRenderer } = window.require('electron');
-    const result = await ipcRenderer.invoke('read-directory', dirPath);
+    const result = await (window as any).api.readDirectory(dirPath);
 
     if (result.success) {
       const fileNodes: FileNode[] = result.files
@@ -232,12 +231,7 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
     }
 
     try {
-      const { ipcRenderer } = window.require('electron');
-      const result = await ipcRenderer.invoke('copy-paths', {
-        sources: sourcePaths,
-        destination,
-      });
-
+      const result = await (window as any).api.copyPaths(sourcePaths, destination);
       if (result?.success) {
         refreshDirectory(destination);
       } else if (result?.error) {
@@ -346,7 +340,7 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
     e.preventDefault();
     e.stopPropagation();
 
-    const pathModule = window.require('path');
+    const pathModule = (window as any).api.path;
     let directoryPath = file.isDirectory ? file.path : pathModule.dirname(file.path);
     let parentPath = file.isDirectory ? pathModule.dirname(file.path) : directoryPath;
 
@@ -418,10 +412,9 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       placeholder: 'document.tex',
       defaultValue: '',
       onConfirm: async (fileName: string) => {
-        const path = window.require('path');
+        const path = (window as any).api.path;
         const newFilePath = path.join(parentPath, fileName);
-        const { ipcRenderer } = window.require('electron');
-        const result = await ipcRenderer.invoke('create-file', newFilePath);
+        const result = await (window as any).api.createFile(newFilePath);
 
         if (result.success) {
           refreshDirectory(parentPath);
@@ -454,10 +447,9 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       placeholder: 'my-folder',
       defaultValue: '',
       onConfirm: async (folderName: string) => {
-        const path = window.require('path');
+        const path = (window as any).api.path;
         const newFolderPath = path.join(parentPath, folderName);
-        const { ipcRenderer } = window.require('electron');
-        const result = await ipcRenderer.invoke('create-directory', newFolderPath);
+        const result = await (window as any).api.createDirectory(newFolderPath);
 
         if (result.success) {
           refreshDirectory(parentPath);
@@ -482,8 +474,7 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       title: isDirectory ? 'Delete Folder' : 'Delete File',
       message: `Are you sure you want to delete the ${isDirectory ? 'folder' : 'file'} "${fileToDelete.name}"? This action cannot be undone.`,
       onConfirm: async () => {
-        const { ipcRenderer } = window.require('electron');
-        const result = await ipcRenderer.invoke('delete-file', fileToDelete.path);
+      const result = await (window as any).api.deletePath(fileToDelete.path);
 
         if (result.success) {
           if (refreshTarget) {
@@ -517,12 +508,11 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       placeholder: fileToRename.name,
       defaultValue: fileToRename.name,
       onConfirm: async (newName: string) => {
-        const path = window.require('path');
+        const path = (window as any).api.path;
         const actualParentPath = path.dirname(fileToRename.path);
         const newPath = path.join(actualParentPath, newName);
 
-        const { ipcRenderer } = window.require('electron');
-        const result = await ipcRenderer.invoke('rename-file', fileToRename.path, newPath);
+        const result = await (window as any).api.renamePath(fileToRename.path, newPath);
 
         if (result.success) {
           refreshDirectory(parentDirectory || actualParentPath);
@@ -540,8 +530,7 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
     setContextMenu(null);
 
     try {
-      const { ipcRenderer } = window.require('electron');
-      const result = await ipcRenderer.invoke('show-in-file-browser', fileToShow.path);
+      const result = await (window as any).api.showInFileBrowser(fileToShow.path);
 
       if (!result.success) {
         alert(`Failed to show in file browser: ${result.error}`);
@@ -568,8 +557,7 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
 
     if (isImageFile(file.name)) {
       try {
-        const { ipcRenderer } = window.require('electron');
-        const result = await ipcRenderer.invoke('read-binary-file', file.path);
+        const result = await (window as any).api.readBinaryFile(file.path);
         if (result.success) {
           const mimeType = getMimeType(file.name);
           setImagePreview({
@@ -637,7 +625,7 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
 
   const getProjectFolderName = () => {
     if (!projectPath) return null;
-    const pathModule = window.require('path');
+    const pathModule = (window as any).api.path;
     return pathModule.basename(projectPath);
   };
 

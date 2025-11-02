@@ -56,41 +56,20 @@ const Preview: React.FC<PreviewProps> = ({
 
   useEffect(() => {
     // Listen for compilation status updates (font/package installation)
-    const { ipcRenderer } = window.require('electron');
-
-    const statusListener = (_event: any, status: { stage: string; message: string }) => {
-      console.log('Compilation status update:', status);
+    const dispose = (window as any).api.onCompilationStatus((status: { stage: string; message: string }) => {
       setCompilationStatus(status.message);
-
-      // Show notification for important status updates
       if (status.stage === 'font-installation' || status.stage === 'package-installation') {
-        setNotification({
-          isOpen: true,
-          title: 'Installing Dependencies',
-          message: status.message,
-          type: 'info',
-        });
+        setNotification({ isOpen: true, title: 'Installing Dependencies', message: status.message, type: 'info' });
       } else if (status.stage === 'retry') {
-        setNotification({
-          isOpen: true,
-          title: 'Retrying Compilation',
-          message: status.message,
-          type: 'success',
-        });
+        setNotification({ isOpen: true, title: 'Retrying Compilation', message: status.message, type: 'success' });
       }
-    };
-
-    ipcRenderer.on('compilation-status', statusListener);
-
-    return () => {
-      ipcRenderer.removeListener('compilation-status', statusListener);
-    };
+    });
+    return () => { dispose?.(); };
   }, []);
 
   const checkLatexInstallation = async () => {
     try {
-      const { ipcRenderer } = window.require('electron');
-      const result = await ipcRenderer.invoke('check-latex-installation');
+      const result = await (window as any).api.checkLatexInstallation();
 
       if (result.success) {
         setLatexInstalled(result.installed);
@@ -134,7 +113,7 @@ const Preview: React.FC<PreviewProps> = ({
       return;
     }
 
-    const { ipcRenderer } = window.require('electron');
+    const api = (window as any).api;
 
     setIsCompiling(true);
     setError('');
@@ -142,7 +121,7 @@ const Preview: React.FC<PreviewProps> = ({
     setCompilationStatus('Compiling...');
 
     try {
-      const result = await ipcRenderer.invoke('compile-latex', currentFilePath, latexEngine);
+      const result = await api.compileLatex(currentFilePath, latexEngine);
 
       if (result.success) {
         setPdfData(result.pdfData);
@@ -243,8 +222,7 @@ const Preview: React.FC<PreviewProps> = ({
   };
 
   const handleInstallLatex = async () => {
-    const { ipcRenderer } = window.require('electron');
-    await ipcRenderer.invoke('open-latex-download');
+    await (window as any).api.openLatexDownload();
   };
 
   if (isMarkdownFile) {

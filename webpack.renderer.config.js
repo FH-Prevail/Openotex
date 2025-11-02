@@ -8,8 +8,11 @@ const isProduction = process.env.NODE_ENV === 'production';
 module.exports = {
   mode: isProduction ? 'production' : 'development',
   entry: './src/renderer/index.tsx',
-  target: 'electron-renderer',
-  devtool: isProduction ? false : 'source-map',
+  // Avoid Node-style externals in the renderer; we don't use Node APIs here.
+  target: 'web',
+  // Enable source maps even for production builds temporarily to help debug
+  // "require is not defined" by identifying the originating module.
+  devtool: 'source-map',
   devServer: {
     port: 3000,
     hot: true,
@@ -82,6 +85,14 @@ module.exports = {
     })
   ],
   resolve: {
-    extensions: ['.tsx', '.ts', '.js', '.jsx']
+    extensions: ['.tsx', '.ts', '.js', '.jsx'],
+    // Explicitly disable Node built-ins so webpack doesn't emit runtime require('node:*') calls.
+    fallback: {
+      path: false,
+      fs: false,
+      os: false,
+      crypto: false,
+      stream: false
+    }
   }
 };

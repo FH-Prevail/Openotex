@@ -14,18 +14,14 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [initialized, setInitialized] = useState<boolean>(false);
-  const [shellName, setShellName] = useState<string>('Shell');
+  const [shellName, setShellName] = useState<string>('Git Terminal');
   const outputRef = useRef<HTMLDivElement>(null);
   const prevProjectPathRef = useRef<string>('');
   const visibilityRef = useRef<boolean>(isVisible);
 
-  const ipcRenderer = window.require('electron').ipcRenderer;
+  const api = (window as any).api;
 
   useEffect(() => {
-    const handleData = (_event: any, data: string) => {
-      setOutput(prev => prev + data);
-    };
-
     const handleExit = (_event: any, code: number | null) => {
       setOutput(prev => prev + `\nProcess exited${code !== null ? ` with code ${code}` : ''}\n`);
       setInitialized(false);
@@ -36,15 +32,17 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
       }
     };
 
-    ipcRenderer.on('terminal-data', handleData);
-    ipcRenderer.on('terminal-exit', handleExit);
+    const disposeData = api.gitTerminal.onData((data: string) => {
+      setOutput(prev => prev + data);
+    });
+    const disposeExit = api.gitTerminal.onExit((code: number | null) => handleExit(null as any, code));
 
     return () => {
-      ipcRenderer.removeListener('terminal-data', handleData);
-      ipcRenderer.removeListener('terminal-exit', handleExit);
-      ipcRenderer.invoke('terminal-stop');
+      disposeData?.();
+      disposeExit?.();
+      api.gitTerminal.stop();
     };
-  }, [ipcRenderer]);
+  }, [api]);
 
   useEffect(() => {
     visibilityRef.current = isVisible;
@@ -58,10 +56,10 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
 
   useEffect(() => {
     if (initialized && projectPath && projectPath !== prevProjectPathRef.current) {
-      ipcRenderer.send('terminal-write', `cd "${projectPath}"\n`);
+      // cwd is set when starting the Git Terminal; no need to send cd
       prevProjectPathRef.current = projectPath;
     }
-  }, [projectPath, initialized, ipcRenderer]);
+  }, [projectPath, initialized]);
 
   useEffect(() => {
     if (outputRef.current) {
@@ -70,14 +68,14 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
   }, [output]);
 
   const startTerminal = async () => {
-    const result = await ipcRenderer.invoke('terminal-start', {
+    const result = await api.gitTerminal.start({
       cwd: projectPath || undefined,
     });
 
     if (result.success) {
       setInitialized(true);
-      setShellName(result.shell || 'Shell');
-      setOutput(prev => (prev ? `${prev}\n` : '') + `Connected to ${result.shell || 'shell'}\n`);
+      setShellName(result.shell || 'Git Terminal');
+      setOutput(prev => (prev ? `${prev}\n` : '') + `Connected to ${result.shell || 'Git Terminal'}\n`);
       if (projectPath) {
         prevProjectPathRef.current = projectPath;
       }
@@ -86,15 +84,19 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputValue.trim()) return;
 
     const command = inputValue;
     setHistory(prev => [...prev, command]);
     setHistoryIndex(-1);
-    setOutput(prev => (prev ? `${prev}\n> ${command}\n` : `> ${command}\n`));
-    ipcRenderer.send('terminal-write', `${command}\n`);
+    setOutput(prev => (prev ? `${prev}\n` : '') + `> ${command}\n`);
+    if (!/^git(\s|$)/i.test(command)) {
+      setOutput(prev => prev + 'Only git commands are allowed.\n');
+      return;
+    }
+    await api.gitTerminal.run(command);
     setInputValue('');
   };
 
@@ -117,9 +119,6 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
         setHistoryIndex(nextIndex);
         setInputValue(history[nextIndex]);
       }
-    } else if (e.key.toLowerCase() === 'c' && e.ctrlKey) {
-      e.preventDefault();
-      ipcRenderer.send('terminal-write', '\u0003');
     }
   };
 
@@ -151,13 +150,13 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
           <pre>{output}</pre>
         </div>
         <form className="terminal-input-area" onSubmit={handleSubmit}>
-          <span className="prompt-symbol">$</span>
+          <span className="prompt-symbol">git$</span>
           <input
             type="text"
             value={inputValue}
             onChange={e => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a command and press Enter"
+            placeholder="Type a git command (e.g., git status)"
             spellCheck={false}
           />
           <button type="submit" className="terminal-send-btn">
@@ -169,10 +168,10 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
         <button
           className={`terminal-toggle ${isVisible ? 'active' : ''}`}
           onClick={onToggle}
-          title="Toggle integrated terminal (Ctrl+`)"
+          title="Toggle Git Terminal (Ctrl+`)"
         >
           <FiTerminal size={16} />
-          <span>Terminal</span>
+          <span>Git Terminal</span>
           {isVisible ? <FiChevronDown size={14} /> : <FiChevronUp size={14} />}
         </button>
       </div>

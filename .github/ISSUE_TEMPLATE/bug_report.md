@@ -28,7 +28,7 @@ If applicable, add screenshots to help explain your problem.
 ## Environment
 Please complete the following information:
 - **OS**: [e.g., Windows 11, macOS 13, Ubuntu 22.04]
-- **Openotex Version**: [e.g., 1.0.0]
+- **Openotex Version**: [e.g., 1.0.1]
 - **LaTeX Distribution**: [e.g., MiKTeX 23.5, TeX Live 2023]
 - **Node Version** (if running from source): [e.g., 18.16.0]
 

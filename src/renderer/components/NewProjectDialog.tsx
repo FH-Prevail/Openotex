@@ -46,8 +46,7 @@ const NewProjectDialog: React.FC<NewProjectDialogProps> = ({
   };
 
   const handleChooseDirectory = async () => {
-    const { ipcRenderer } = window.require('electron');
-    const result = await ipcRenderer.invoke('open-directory-dialog');
+    const result = await (window as any).api.openDirectoryDialog();
     if (result.success && !result.canceled && result.filePaths.length > 0) {
       const selectedDir = result.filePaths[0];
       setDirectory(selectedDir);

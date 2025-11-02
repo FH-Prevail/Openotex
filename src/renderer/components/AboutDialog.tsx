@@ -7,51 +7,25 @@ interface AboutDialogProps {
   onClose: () => void;
 }
 
-const CURRENT_VERSION = '1.0.0';
+const CURRENT_VERSION = '1.0.1';
 const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
 const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
 
 const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
-  // Get icon using Electron IPC for absolute path
-  const [iconSrc, setIconSrc] = React.useState<string>('');
+  // Use static asset path (bundled to dist/assets)
+  const [iconSrc, setIconSrc] = React.useState<string>('assets/openotex-icon.png');
   const [isCheckingUpdate, setIsCheckingUpdate] = React.useState(false);
   const [updateStatus, setUpdateStatus] = React.useState<string>('');
   const [checkOnStartup, setCheckOnStartup] = React.useState<boolean>(true);
 
   React.useEffect(() => {
-    const loadIcon = async () => {
-      try {
-        const { ipcRenderer } = window.require('electron');
-        const result = await ipcRenderer.invoke('read-binary-file', getIconPath());
-        if (result.success) {
-          setIconSrc(`data:image/png;base64,${result.data}`);
-        }
-      } catch (error) {
-        console.error('Failed to load icon:', error);
-      }
-    };
-
-    const getIconPath = () => {
-      try {
-        const path = window.require('path');
-        const { app } = window.require('electron').remote || window.require('@electron/remote');
-        return path.join(app.getAppPath(), 'assets', 'openotex-icon.png');
-      } catch {
-        // Fallback
-        const path = window.require('path');
-        return path.join(process.cwd(), 'assets', 'openotex-icon.png');
-      }
-    };
-
     // Load user preference for auto-update check
     const savedPreference = localStorage.getItem('checkUpdateOnStartup');
     if (savedPreference !== null) {
       setCheckOnStartup(savedPreference === 'true');
     }
-
-    loadIcon();
   }, []);
 
   const handleCheckOnStartupChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -140,8 +114,7 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
         );
 
         if (userWantsUpdate) {
-          const { shell } = window.require('electron');
-          await shell.openExternal(DOWNLOAD_PAGE_URL);
+          await (window as any).api.openExternal(DOWNLOAD_PAGE_URL);
           setUpdateStatus(`Opened download page for version ${latestVersion}`);
         } else {
           setUpdateStatus('Update cancelled.');

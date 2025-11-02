@@ -3,12 +3,15 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 
 # Build output
 dist/
 release/
 build/
 out/
+*.js.map
+*.css.map
 
 # Electron
 *.exe
@@ -17,6 +20,12 @@ out/
 *.deb
 *.rpm
 *.snap
+*.blockmap
+
+# Electron builder cache and output
+.electron-builder-cache/
+builder-effective-config.yaml
+builder-debug.yml
 
 # IDE
 .vscode/
@@ -25,6 +34,8 @@ out/
 *.swo
 *~
 .DS_Store
+*.sublime-project
+*.sublime-workspace
 
 # Environment
 .env
@@ -40,14 +51,19 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
+pnpm-debug.log*
 
 # OS
 Thumbs.db
 .DS_Store
 *.bak
+*.backup
+Desktop.ini
+$RECYCLE.BIN/
 
 # TypeScript
 *.tsbuildinfo
+*.tslint-report.json
 
 # LaTeX auxiliary files
 *.aux
@@ -60,11 +76,19 @@ Thumbs.db
 *.fls
 *.blg
 *.bbl
+*.bcf
+*.run.xml
+*.nav
+*.snm
+*.vrb
 
 # Temporary files
 tmp/
 temp/
 *.tmp
+*.temp
+*~
+.*.sw[a-z]
 
 # Session files
 .openotex-session.yml
@@ -80,7 +104,24 @@ coverage/
 .cache/
 .parcel-cache/
 .webpack/
+.eslintcache
+tsconfig.tsbuildinfo
 
-# Lock files (optional, comment out if you want to include them)
+# npm/yarn/pnpm cache and locks (keep package-lock.json)
+.npm/
+.yarn/
+.pnpm-store/
+# Uncomment to ignore lock files:
 # package-lock.json
 # yarn.lock
+# pnpm-lock.yaml
+
+# Debug and error files
+debug.log
+error.log
+
+# Test files
+*.spec.js
+*.test.js
+__tests__/
+.jest-cache/

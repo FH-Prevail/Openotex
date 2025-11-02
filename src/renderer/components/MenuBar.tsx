@@ -179,7 +179,7 @@ const MenuBar: React.FC<MenuBarProps> = ({
           <div className="menu-dropdown" onClick={event => event.stopPropagation()}>
             <button className="menu-item" onClick={execute(onToggleTerminal)}>
               {renderTick(isTerminalVisible)}
-              {renderMenuLabel('Integrated Terminal', 'Ctrl+`')}
+              {renderMenuLabel('Git Terminal', 'Ctrl+`')}
             </button>
             <div className="menu-separator" />
             <button className="menu-item" onClick={execute(onToggleAutoCompile)}>
