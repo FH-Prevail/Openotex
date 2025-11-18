@@ -7,7 +7,7 @@ import '../styles/Preview-addon.css';
 
 interface PreviewProps {
   content: string;
-  compiledOutput: string;
+  compileNonce: number;
   currentFileExtension: string | null;
   currentFilePath: string | null;
   latexEngine?: 'pdflatex' | 'xelatex' | 'lualatex';
@@ -16,7 +16,7 @@ interface PreviewProps {
 
 const Preview: React.FC<PreviewProps> = ({
   content,
-  compiledOutput,
+  compileNonce,
   currentFileExtension,
   currentFilePath,
   latexEngine = 'pdflatex',
@@ -48,6 +48,7 @@ const Preview: React.FC<PreviewProps> = ({
   );
   const isLatexFile = fileExtension === 'tex' || fileExtension === 'latex';
   const isMarkdownFile = fileExtension === 'md' || fileExtension === 'markdown';
+  const latestCompileRequestRef = useRef(0);
 
   useEffect(() => {
     // Only check LaTeX availability once per session; harmless if not a LaTeX file.
@@ -114,6 +115,8 @@ const Preview: React.FC<PreviewProps> = ({
     }
 
     const api = (window as any).api;
+    const requestId = latestCompileRequestRef.current + 1;
+    latestCompileRequestRef.current = requestId;
 
     setIsCompiling(true);
     setError('');
@@ -122,6 +125,10 @@ const Preview: React.FC<PreviewProps> = ({
 
     try {
       const result = await api.compileLatex(currentFilePath, latexEngine);
+
+      if (latestCompileRequestRef.current !== requestId) {
+        return;
+      }
 
       if (result.success) {
         setPdfData(result.pdfData);
@@ -141,20 +148,26 @@ const Preview: React.FC<PreviewProps> = ({
         }
       }
     } catch (err: any) {
+      if (latestCompileRequestRef.current !== requestId) {
+        return;
+      }
       setError(`Compilation Error: ${err.message}`);
       console.error('Error compiling LaTeX:', err);
       setPdfData('');
       setCompilationStatus('');
     } finally {
-      setIsCompiling(false);
+      if (latestCompileRequestRef.current === requestId) {
+        setIsCompiling(false);
+      }
     }
   }, [isLatexFile, currentFilePath, latexEngine, onMissingPackages]);
 
   // Trigger compilation when content, engine, or file changes
   useEffect(() => {
-    if (isLatexFile && compiledOutput && latexInstalled) {
+    if (isLatexFile && latexInstalled && compileNonce > 0) {
       compileLatex();
     } else if (!isLatexFile) {
+      latestCompileRequestRef.current += 1;
       // Reset LaTeX-related state when switching to another file type.
       setIsCompiling(false);
       setCompilationStatus('');
@@ -162,7 +175,7 @@ const Preview: React.FC<PreviewProps> = ({
       setCompilationLog('');
       setPdfData('');
     }
-  }, [compiledOutput, latexInstalled, isLatexFile, latexEngine, compileLatex]);
+  }, [compileNonce, latexInstalled, isLatexFile, latexEngine, compileLatex]);
 
   const handleZoomIn = () => {
     setZoom(prev => Math.min(prev + 10, 200));

@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   FiFile,
   FiFolder,
@@ -79,21 +79,9 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
     dataUrl: '',
   });
   const [dragDestination, setDragDestination] = useState<string | null>(null);
+  const reloadTimeoutRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    if (projectPath) {
-      loadDirectory(projectPath);
-    }
-  }, [projectPath]);
-
-  // Refresh when refreshTrigger changes (e.g., after version freeze)
-  useEffect(() => {
-    if (projectPath && refreshTrigger && refreshTrigger > 0) {
-      loadDirectory(projectPath);
-    }
-  }, [refreshTrigger, projectPath]);
-
-  const loadDirectory = async (dirPath: string, parentNode?: FileNode) => {
+  const loadDirectory = useCallback(async (dirPath: string, parentNode?: FileNode) => {
     const result = await (window as any).api.readDirectory(dirPath);
 
     if (result.success) {
@@ -123,7 +111,49 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
         setFiles(fileNodes);
       }
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (projectPath) {
+      loadDirectory(projectPath);
+    }
+  }, [projectPath, loadDirectory]);
+
+  // Refresh when refreshTrigger changes (e.g., after version freeze)
+  useEffect(() => {
+    if (projectPath && refreshTrigger && refreshTrigger > 0) {
+      loadDirectory(projectPath);
+    }
+  }, [refreshTrigger, projectPath, loadDirectory]);
+
+  useEffect(() => {
+    const api = (window as any).api;
+    if (!projectPath || !api?.onFilesystemEvent) {
+      return;
+    }
+
+    const dispose = api.onFilesystemEvent((payload: { root?: string; path?: string }) => {
+      if (!payload || payload.root !== projectPath) {
+        return;
+      }
+
+      if (reloadTimeoutRef.current) {
+        return;
+      }
+      reloadTimeoutRef.current = window.setTimeout(() => {
+        reloadTimeoutRef.current = null;
+        loadDirectory(projectPath);
+      }, 200);
+    });
+
+    return () => {
+      if (reloadTimeoutRef.current) {
+        window.clearTimeout(reloadTimeoutRef.current);
+        reloadTimeoutRef.current = null;
+      }
+      dispose?.();
+    };
+  }, [projectPath, loadDirectory]);
 
   const updateNodeChildren = (
     nodes: FileNode[],

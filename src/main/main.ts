@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, Menu, MenuItemConstructorOp
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { execFile, spawn, ChildProcessWithoutNullStreams } from 'child_process';
+import chokidar, { FSWatcher } from 'chokidar';
 // no util.promisify needed after switching to execFile/spawn helpers
 
 // execFile promise wrapper to avoid shell interpolation
@@ -67,6 +68,7 @@ const spawnCollect = (command: string, args: string[], options: any = {}, timeou
 let mainWindow: BrowserWindow | null = null;
 // Git-only terminal sessions (stores running process and cwd per sender)
 const gitTerminalSessions = new Map<number, { cwd: string; proc: ChildProcessWithoutNullStreams | null }>();
+const fileWatchers = new Map<number, { watcher: FSWatcher; root: string }>();
 
 const pathExists = async (targetPath: string): Promise<boolean> => {
   try {
@@ -90,6 +92,62 @@ const buildUniqueDestination = async (destinationDir: string, baseName: string):
     index += 1;
   } while (await pathExists(candidate));
   return candidate;
+};
+
+const splitCommandLine = (input: string): string[] => {
+  const tokens: string[] = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+  let escapeNext = false;
+
+  const pushCurrent = () => {
+    if (current.length > 0) {
+      tokens.push(current);
+      current = '';
+    }
+  };
+
+  for (const char of input.trim()) {
+    if (escapeNext) {
+      current += char;
+      escapeNext = false;
+      continue;
+    }
+    if (char === '\\' && !inSingle) {
+      escapeNext = true;
+      continue;
+    }
+    if (char === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (char === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (/\s/.test(char) && !inSingle && !inDouble) {
+      pushCurrent();
+      continue;
+    }
+    current += char;
+  }
+
+  pushCurrent();
+  return tokens;
+};
+
+const stopWatcherForSender = (senderId: number) => {
+  const existing = fileWatchers.get(senderId);
+  if (!existing) {
+    return;
+  }
+  fileWatchers.delete(senderId);
+  try {
+    void existing.watcher.close();
+  } catch (error) {
+    console.warn('Error closing file watcher:', error);
+  }
 };
 
 const buildApplicationMenu = () => {
@@ -320,6 +378,14 @@ function createWindow() {
       }
     });
     gitTerminalSessions.clear();
+    fileWatchers.forEach(({ watcher }) => {
+      try {
+        void watcher.close();
+      } catch (error) {
+        console.error('Error closing watcher:', error);
+      }
+    });
+    fileWatchers.clear();
     mainWindow = null;
   });
 }
@@ -343,6 +409,10 @@ app.on('before-quit', () => {
     try { proc?.kill(); } catch {}
   });
   gitTerminalSessions.clear();
+  fileWatchers.forEach(({ watcher }) => {
+    try { void watcher.close(); } catch {}
+  });
+  fileWatchers.clear();
 });
 
 // IPC Handlers for file operations
@@ -486,6 +556,57 @@ ipcMain.handle('read-binary-file', async (_event, filePath: string) => {
   }
 });
 
+ipcMain.handle('watch-path', async (event, projectRoot: string) => {
+  stopWatcherForSender(event.sender.id);
+
+  if (typeof projectRoot !== 'string' || projectRoot.trim().length === 0) {
+    return { success: false, error: 'Invalid project path.' };
+  }
+
+  try {
+    const watcher = chokidar.watch(projectRoot, {
+      ignoreInitial: true,
+      ignored: (changedPath: string) => {
+        if (!changedPath) {
+          return false;
+        }
+        if (changedPath.endsWith('.openotex-session.yml') || changedPath.endsWith('.metadata')) {
+          return true;
+        }
+        if (changedPath.includes(`${path.sep}.git${path.sep}`) || changedPath.endsWith(`${path.sep}.git`)) {
+          return true;
+        }
+        return false;
+      },
+    });
+
+    watcher.on('all', (changeEvent, changedPath) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('filesystem-changed', {
+          event: changeEvent,
+          path: changedPath,
+          root: projectRoot,
+        });
+      }
+    });
+
+    watcher.on('error', (error) => {
+      console.warn('File watcher error:', error);
+    });
+
+    fileWatchers.set(event.sender.id, { watcher, root: projectRoot });
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to start watcher:', error);
+    return { success: false, error: (error as Error).message || 'Failed to watch path.' };
+  }
+});
+
+ipcMain.handle('unwatch-path', async (event) => {
+  stopWatcherForSender(event.sender.id);
+  return { success: true };
+});
+
 // Git-only terminal API
 ipcMain.handle('git-terminal-start', async (event, options: { cwd?: string } = {}) => {
   const senderId = event.sender.id;
@@ -509,7 +630,8 @@ ipcMain.handle('git-terminal-run', async (event, payload: { command: string }) =
   gitTerminalSessions.set(senderId, session);
 
   const raw = (payload?.command || '').trim();
-  if (!/^git(\s|$)/i.test(raw)) {
+  const tokens = splitCommandLine(raw);
+  if (!tokens.length || tokens[0].toLowerCase() !== 'git') {
     if (!event.sender.isDestroyed()) {
       event.sender.send('git-terminal-data', 'Only git commands are allowed.\n');
       event.sender.send('git-terminal-exit', 1);
@@ -517,8 +639,7 @@ ipcMain.handle('git-terminal-run', async (event, payload: { command: string }) =
     return { success: false, error: 'Only git commands are allowed.' };
   }
 
-  // Parse command into args: naive split respecting quotes
-  const args = raw.split(' ').slice(1).filter(Boolean);
+  const args = tokens.slice(1);
 
   try {
     const child = spawn(process.platform === 'win32' ? 'git.exe' : 'git', args, {
@@ -799,20 +920,37 @@ const needsRecompilation = (output: string): boolean => {
 };
 
 // Helper function to install missing LaTeX fonts
-const installLatexFonts = async (): Promise<{ success: boolean; message: string }> => {
+const installLatexFonts = async (distribution: 'miktex' | 'texlive' | 'unknown'): Promise<{ success: boolean; message: string }> => {
   try {
-    console.log('Installing EC fonts package...');
-    await execFileAsync('mpm', ['--install=ec'], { timeout: 120000 });
+    if (distribution === 'miktex') {
+      console.log('Installing EC fonts package via MiKTeX...');
+      await execFileAsync('mpm', ['--install=ec'], { timeout: 120000 });
 
-    console.log('Installing CM-Super fonts package...');
-    await execFileAsync('mpm', ['--install=cm-super'], { timeout: 120000 });
+      console.log('Installing CM-Super fonts package via MiKTeX...');
+      await execFileAsync('mpm', ['--install=cm-super'], { timeout: 120000 });
 
-    console.log('Refreshing MiKTeX file database...');
-    await execFileAsync('initexmf', ['--update-fndb'], { timeout: 60000 });
+      console.log('Refreshing MiKTeX file database...');
+      await execFileAsync('initexmf', ['--update-fndb'], { timeout: 60000 });
+    } else if (distribution === 'texlive') {
+      console.log('Installing EC fonts package via TeX Live...');
+      await execFileAsync('tlmgr', ['install', 'ec'], { timeout: 120000 });
+
+      console.log('Installing CM-Super fonts package via TeX Live...');
+      await execFileAsync('tlmgr', ['install', 'cm-super'], { timeout: 120000 });
+
+      console.log('Refreshing TeX Live file database...');
+      try {
+        await execFileAsync('mktexlsr', [], { timeout: 60000 });
+      } catch {
+        await execFileAsync('texhash', [], { timeout: 60000 });
+      }
+    } else {
+      return { success: false, message: 'Unknown LaTeX distribution. Skipping automatic font installation.' };
+    }
 
     return {
       success: true,
-      message: 'EC and CM-Super fonts installed successfully'
+      message: 'Required fonts installed successfully'
     };
   } catch (error: any) {
     console.error('Font installation failed:', error);
@@ -830,10 +968,21 @@ const installLatexPackage = async (packageName: string): Promise<{ success: bool
     if (!/^[A-Za-z0-9._-]+$/.test(packageName)) {
       return { success: false, message: 'Invalid package name.' };
     }
-    await execFileAsync('mpm', [ `--install=${packageName}` ], { timeout: 120000 });
 
-    console.log('Refreshing MiKTeX file database...');
-    await execFileAsync('initexmf', ['--update-fndb'], { timeout: 60000 });
+    const distribution = await detectLatexDistribution();
+    if (distribution === 'miktex') {
+      await execFileAsync('mpm', [ `--install=${packageName}` ], { timeout: 120000 });
+      await execFileAsync('initexmf', ['--update-fndb'], { timeout: 60000 });
+    } else if (distribution === 'texlive') {
+      await execFileAsync('tlmgr', ['install', packageName], { timeout: 120000 });
+      try {
+        await execFileAsync('mktexlsr', [], { timeout: 60000 });
+      } catch {
+        await execFileAsync('texhash', [], { timeout: 60000 });
+      }
+    } else {
+      return { success: false, message: 'Unknown LaTeX distribution.' };
+    }
 
     return {
       success: true,
@@ -855,6 +1004,7 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
     const filename = path.basename(texFilePath, '.tex');
     const pdfPath = path.join(dir, `${filename}.pdf`);
     const auxPath = path.join(dir, `${filename}.aux`);
+    const distribution = await detectLatexDistribution();
 
     // Run LaTeX engine with proper flags
     // -interaction=nonstopmode: don't stop on errors
@@ -886,6 +1036,7 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
     let attemptCount = 0;
     const maxAttempts = 5; // Maximum compilation attempts
     let installedPackages = new Set<string>(); // Track installed packages to avoid loops
+    let attemptedFontFallback = false;
 
     while (attemptCount < maxAttempts) {
       attemptCount++;
@@ -957,28 +1108,39 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
             }
           }
 
-          // Fallback: Install standard font packages (EC and CM-Super)
-          event.sender.send('compilation-status', {
-            stage: 'font-installation',
-            message: 'Installing required LaTeX fonts (EC, CM-Super)... This may take a few minutes.'
-          });
-
-          const installResult = await installLatexFonts();
-
-          if (installResult.success) {
-            console.log('Fonts installed, retrying compilation...');
+          if (!attemptedFontFallback) {
+            attemptedFontFallback = true;
             event.sender.send('compilation-status', {
-              stage: 'retry',
-              message: 'Fonts installed successfully. Retrying compilation...'
+              stage: 'font-installation',
+              message: 'Installing required LaTeX fonts (EC, CM-Super)... This may take a few minutes.'
             });
-            continue; // Retry compilation
-          } else {
-            return {
-              success: false,
-              error: 'Font installation failed',
-              log: errorOutput,
-              details: installResult.message
-            };
+
+            if (distribution === 'unknown') {
+              return {
+                success: false,
+                error: 'Font installation failed',
+                log: errorOutput,
+                details: 'Unknown LaTeX distribution. Install fonts manually.'
+              };
+            }
+
+            const installResult = await installLatexFonts(distribution);
+
+            if (installResult.success) {
+              console.log('Fonts installed, retrying compilation...');
+              event.sender.send('compilation-status', {
+                stage: 'retry',
+                message: 'Fonts installed successfully. Retrying compilation...'
+              });
+              continue; // Retry compilation
+            } else {
+              return {
+                success: false,
+                error: 'Font installation failed',
+                log: errorOutput,
+                details: installResult.message
+              };
+            }
           }
         }
 

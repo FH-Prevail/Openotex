@@ -1,6 +1,6 @@
 {
   "name": "openotex",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "A modern, open-source LaTeX editor for desktop",
   "main": "dist/main.js",
   "scripts": {
@@ -48,6 +48,7 @@
     "@monaco-editor/react": "^4.6.0",
     "@types/d3": "^7.4.3",
     "@types/js-yaml": "^4.0.9",
+    "chokidar": "^4.0.3",
     "d3": "^7.9.0",
     "html2pdf.js": "^0.12.1",
     "js-yaml": "^4.1.0",

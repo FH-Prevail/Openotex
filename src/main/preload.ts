@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('api', {
   createDirectory: (dirPath: string) => ipcRenderer.invoke('create-directory', dirPath),
   copyPaths: (sources: string[], destination: string) => ipcRenderer.invoke('copy-paths', { sources, destination }),
   readBinaryFile: (filePath: string) => ipcRenderer.invoke('read-binary-file', filePath),
+  watchPath: (projectRoot: string) => ipcRenderer.invoke('watch-path', projectRoot),
+  unwatchPath: () => ipcRenderer.invoke('unwatch-path'),
 
   // Dialogs + system
   openDirectoryDialog: () => ipcRenderer.invoke('open-directory-dialog'),
@@ -48,6 +50,11 @@ contextBridge.exposeInMainWorld('api', {
     const handler = (_event: any, status: any) => listener(status);
     ipcRenderer.on('compilation-status', handler);
     return () => ipcRenderer.removeListener('compilation-status', handler);
+  },
+  onFilesystemEvent: (listener: (payload: { event: string; path: string; root: string }) => void) => {
+    const handler = (_event: any, payload: any) => listener(payload);
+    ipcRenderer.on('filesystem-changed', handler);
+    return () => ipcRenderer.removeListener('filesystem-changed', handler);
   },
 
   // Git Terminal (git-only)

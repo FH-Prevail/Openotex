@@ -73,7 +73,7 @@ const App: React.FC = () => {
     const [openTabs, setOpenTabs] = useState<FileNode[]>([]);
     const [tabContents, setTabContents] = useState<Map<string, string>>(new Map());
     const [editorContent, setEditorContent] = useState('');
-    const [compiledOutput, setCompiledOutput] = useState('');
+    const [compileNonce, setCompileNonce] = useState(0);
     const [projectPath, setProjectPath] = useState('');
     const [autoCompile, setAutoCompile] = useState<boolean>(() => {
         try {
@@ -127,6 +127,12 @@ const App: React.FC = () => {
             return '#f8e71c';
         }
     });
+    const triggerCompile = useCallback(() => {
+        setCompileNonce(prev => prev + 1);
+    }, []);
+    const resetCompileNonce = useCallback(() => {
+        setCompileNonce(0);
+    }, []);
     const pendingHighlightRef = useRef<SelectionResult | null>(null);
     const [highlightDialog, setHighlightDialog] = useState<HighlightDialogState>({
         isOpen: false,
@@ -385,7 +391,7 @@ const App: React.FC = () => {
             setTabContents(new Map());
             setTabAnnotations(new Map());
             setEditorContent('');
-            setCompiledOutput('');
+            resetCompileNonce();
             setAnnotations([]);
             setShowAnnotationsPanel(false);
             setAnnotationsHidden(true);
@@ -418,7 +424,7 @@ const App: React.FC = () => {
         setTabContents(new Map());
         setTabAnnotations(new Map());
         setEditorContent('');
-        setCompiledOutput('');
+        resetCompileNonce();
         setAnnotations([]);
         setShowAnnotationsPanel(false);
         setAnnotationsHidden(true);
@@ -496,7 +502,7 @@ Your conclusions go here.
             setOpenTabs([mainTexFile]);
             setCurrentFile(mainTexFile);
             setEditorContent(latexTemplate);
-            setCompiledOutput(latexTemplate);
+            triggerCompile();
             setTabContents(new Map([[mainTexPath, latexTemplate]]));
             setAnnotations([]);
 
@@ -732,7 +738,12 @@ Your conclusions go here.
         setEditorContent(activeContent);
         const activeExt = pathModule.extname(activeFile.path).toLowerCase();
         const activeIsLatex = activeExt === '.tex' || activeExt === '.latex';
-        setCompiledOutput(activeIsLatex ? activeContent : '');
+        if (activeIsLatex) {
+            triggerCompile();
+        }
+        else {
+            resetCompileNonce();
+        }
         setAnnotations(activeAnnotations);
         if (missingPaths.length > 0) {
             const message = missingPaths.length === 1
@@ -789,7 +800,12 @@ Your conclusions go here.
             const savedAnnotations = tabAnnotations.get(file.path);
             if (savedContent !== undefined) {
                 setEditorContent(savedContent);
-                setCompiledOutput(fileIsLatex ? savedContent : '');
+                if (fileIsLatex) {
+                    triggerCompile();
+                }
+                else {
+                    resetCompileNonce();
+                }
             }
             if (savedAnnotations) {
                 setAnnotations(savedAnnotations);
@@ -817,7 +833,12 @@ Your conclusions go here.
                 setOpenTabs(prev => [...prev, file]);
                 setCurrentFile(file);
                 setEditorContent(result.content);
-                setCompiledOutput(fileIsLatex ? result.content : '');
+                if (fileIsLatex) {
+                    triggerCompile();
+                }
+                else {
+                    resetCompileNonce();
+                }
                 setTabContents(prev => {
                     const newMap = new Map(prev);
                     newMap.set(file.path, result.content);
@@ -867,7 +888,12 @@ Your conclusions go here.
         const savedContent = tabContents.get(file.path) || '';
         const savedAnnotations = tabAnnotations.get(file.path);
         setEditorContent(savedContent);
-        setCompiledOutput(fileIsLatex ? savedContent : '');
+        if (fileIsLatex) {
+            triggerCompile();
+        }
+        else {
+            resetCompileNonce();
+        }
         if (savedAnnotations) {
             setAnnotations(savedAnnotations);
         }
@@ -928,7 +954,12 @@ Your conclusions go here.
                 setEditorContent(savedContent);
                 const newExt = newCurrentFile.name.split('.').pop()?.toLowerCase() ?? '';
                 const newIsLatex = newExt === 'tex' || newExt === 'latex';
-                setCompiledOutput(newIsLatex ? savedContent : '');
+                if (newIsLatex) {
+                    triggerCompile();
+                }
+                else {
+                    resetCompileNonce();
+                }
                 if (savedAnnotations) {
                     setAnnotations(savedAnnotations);
                 }
@@ -943,7 +974,7 @@ Your conclusions go here.
                 // No more tabs open
                 setCurrentFile(null);
                 setEditorContent('');
-                setCompiledOutput('');
+                resetCompileNonce();
                 setAnnotations([]);
                 setShowAnnotationsPanel(false);
                 setAnnotationsHidden(true);
@@ -1269,7 +1300,7 @@ Your conclusions go here.
                     // Delay the check by 3 seconds to let the app fully load
                     setTimeout(async () => {
                         try {
-                            const CURRENT_VERSION = '1.0.1';
+                            const CURRENT_VERSION = '1.0.2';
                             const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
                             const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
 
@@ -1373,6 +1404,31 @@ Your conclusions go here.
         }
         void restoreSession(projectPath);
     }, [projectPath, restoreSession]);
+    useEffect(() => {
+        const api = (window as any).api;
+        if (!api?.watchPath) {
+            return;
+        }
+        const configureWatcher = async () => {
+            try {
+                if (projectPath) {
+                    await api.watchPath(projectPath);
+                }
+                else {
+                    await api.unwatchPath();
+                }
+            }
+            catch (error) {
+                console.warn('Unable to configure project watcher', error);
+            }
+        };
+        void configureWatcher();
+        return () => {
+            if (api?.unwatchPath) {
+                void api.unwatchPath();
+            }
+        };
+    }, [projectPath]);
     const handleContentChange = (content: string) => {
         setEditorContent(content);
         // Update tab content map
@@ -1393,7 +1449,7 @@ Your conclusions go here.
                 clearTimeout(autoCompileTimeout.current);
                 autoCompileTimeout.current = null;
             }
-            setCompiledOutput('');
+            resetCompileNonce();
             return;
         }
         // Auto-compile with debounce
@@ -1402,7 +1458,7 @@ Your conclusions go here.
                 clearTimeout(autoCompileTimeout.current);
             }
             autoCompileTimeout.current = setTimeout(() => {
-                setCompiledOutput(content);
+                triggerCompile();
             }, 3000); // Compile after 3 seconds of inactivity
         }
     };
@@ -1410,8 +1466,8 @@ Your conclusions go here.
         if (!isCurrentFileLatex) {
             return;
         }
-        setCompiledOutput(editorContent);
-    }, [editorContent, isCurrentFileLatex]);
+        triggerCompile();
+    }, [isCurrentFileLatex, triggerCompile]);
 
     const handleSaveCurrentFile = useCallback(async () => {
         if (!currentFile || currentFile.isDirectory) {
@@ -1797,22 +1853,23 @@ Your conclusions go here.
                         </div>
                     </div>
                     <div className="panel preview-panel">
-                        {showStructureMap ? (
-                            <StructureMap
-                                content={editorContent}
-                                currentFileExtension={currentFileExtension}
-                                onNodeClick={handleStructureMapNodeClick}
-                            />
-                        ) : (
+                        <div className="preview-layer" hidden={showStructureMap} style={{ height: '100%' }}>
                             <Preview
                                 content={editorContent}
-                                compiledOutput={compiledOutput}
+                                compileNonce={compileNonce}
                                 currentFileExtension={currentFileExtension}
                                 currentFilePath={currentFile?.path ?? null}
                                 latexEngine={latexEngine}
                                 onMissingPackages={handleMissingPackages}
                             />
-                        )}
+                        </div>
+                        <div className="structure-layer" hidden={!showStructureMap} style={{ height: '100%' }}>
+                            <StructureMap
+                                content={editorContent}
+                                currentFileExtension={currentFileExtension}
+                                onNodeClick={handleStructureMapNodeClick}
+                            />
+                        </div>
                     </div>
                 </Split>
             </div>
