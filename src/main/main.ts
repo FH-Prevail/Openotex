@@ -66,6 +66,7 @@ const spawnCollect = (command: string, args: string[], options: any = {}, timeou
 };
 
 let mainWindow: BrowserWindow | null = null;
+const gitCmd = process.platform === 'win32' ? 'git.exe' : 'git';
 // Git-only terminal sessions (stores running process and cwd per sender)
 const gitTerminalSessions = new Map<number, { cwd: string; proc: ChildProcessWithoutNullStreams | null }>();
 const fileWatchers = new Map<number, { watcher: FSWatcher; root: string }>();
@@ -92,6 +93,10 @@ const buildUniqueDestination = async (destinationDir: string, baseName: string):
     index += 1;
   } while (await pathExists(candidate));
   return candidate;
+};
+
+const runGit = async (args: string[], cwd: string) => {
+  return execFileAsync(gitCmd, args, { cwd });
 };
 
 const splitCommandLine = (input: string): string[] => {
@@ -607,6 +612,96 @@ ipcMain.handle('unwatch-path', async (event) => {
   return { success: true };
 });
 
+ipcMain.handle('git-check', async () => {
+  try {
+    const { stdout } = await runGit(['--version'], process.cwd());
+    return { success: true, version: stdout.trim() };
+  } catch (error) {
+    const errMsg = (error as any)?.stderr || (error as Error).message || 'Git not available';
+    return { success: false, error: errMsg };
+  }
+});
+
+ipcMain.handle('git-status', async (_event, payload: { cwd?: string }) => {
+  const cwd = payload?.cwd;
+  if (!cwd) {
+    return { success: false, error: 'No project path provided.' };
+  }
+  try {
+    const { stdout } = await runGit(['-C', cwd, 'status', '--short'], cwd);
+    const files = stdout
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const status = line.slice(0, 2).trim() || line.charAt(0);
+        const filePath = line.slice(3).trim();
+        return { status, path: filePath || line.trim() };
+      });
+    return { success: true, files };
+  } catch (error) {
+    const message = (error as any).stderr || (error as Error).message;
+    const notRepo = /not a git repository/i.test(message || '');
+    return { success: false, error: message, notRepo };
+  }
+});
+
+ipcMain.handle('git-commit', async (_event, payload: { cwd?: string; message?: string }) => {
+  const cwd = payload?.cwd;
+  const message = (payload?.message || '').trim();
+  if (!cwd) {
+    return { success: false, error: 'No project path provided.' };
+  }
+  if (!message) {
+    return { success: false, error: 'Commit message is required.' };
+  }
+  try {
+    await runGit(['-C', cwd, 'add', '-A'], cwd);
+    await runGit(['-C', cwd, 'commit', '-m', message], cwd);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: (error as any).stderr || (error as Error).message };
+  }
+});
+
+ipcMain.handle('git-pull', async (_event, payload: { cwd?: string }) => {
+  const cwd = payload?.cwd;
+  if (!cwd) {
+    return { success: false, error: 'No project path provided.' };
+  }
+  try {
+    const { stdout } = await runGit(['-C', cwd, 'pull'], cwd);
+    return { success: true, output: stdout };
+  } catch (error) {
+    return { success: false, error: (error as any).stderr || (error as Error).message };
+  }
+});
+
+ipcMain.handle('git-push', async (_event, payload: { cwd?: string }) => {
+  const cwd = payload?.cwd;
+  if (!cwd) {
+    return { success: false, error: 'No project path provided.' };
+  }
+  try {
+    const { stdout } = await runGit(['-C', cwd, 'push'], cwd);
+    return { success: true, output: stdout };
+  } catch (error) {
+    return { success: false, error: (error as any).stderr || (error as Error).message };
+  }
+});
+
+ipcMain.handle('git-init', async (_event, payload: { cwd?: string }) => {
+  const cwd = payload?.cwd;
+  if (!cwd) {
+    return { success: false, error: 'No project path provided.' };
+  }
+  try {
+    const { stdout } = await runGit(['-C', cwd, 'init'], cwd);
+    return { success: true, output: stdout };
+  } catch (error) {
+    return { success: false, error: (error as any).stderr || (error as Error).message };
+  }
+});
+
 // Git-only terminal API
 ipcMain.handle('git-terminal-start', async (event, options: { cwd?: string } = {}) => {
   const senderId = event.sender.id;
@@ -642,7 +737,7 @@ ipcMain.handle('git-terminal-run', async (event, payload: { command: string }) =
   const args = tokens.slice(1);
 
   try {
-    const child = spawn(process.platform === 'win32' ? 'git.exe' : 'git', args, {
+    const child = spawn(gitCmd, args, {
       cwd: session.cwd,
       env: process.env,
       stdio: 'pipe'

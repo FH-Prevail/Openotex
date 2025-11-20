@@ -7,7 +7,7 @@ interface AboutDialogProps {
   onClose: () => void;
 }
 
-const CURRENT_VERSION = '1.0.2';
+const CURRENT_VERSION = '1.0.3';
 const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
 const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
 
@@ -34,9 +34,11 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
     localStorage.setItem('checkUpdateOnStartup', newValue.toString());
   };
 
+  const normalizeVersion = (version: string) => version.trim().replace(/^v/i, '');
+
   const compareVersions = (v1: string, v2: string): number => {
-    const parts1 = v1.split('.').map(Number);
-    const parts2 = v2.split('.').map(Number);
+    const parts1 = normalizeVersion(v1).split('.').map(Number);
+    const parts2 = normalizeVersion(v2).split('.').map(Number);
 
     for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
       const part1 = parts1[i] || 0;
@@ -60,11 +62,13 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
       let foundUpdate = false;
 
       try {
-        const versionResponse = await fetch('https://openotex.com/version.json');
+        const versionResponse = await fetch('https://openotex.com/version.json', { cache: 'no-cache' });
         if (versionResponse.ok) {
           const versionData = await versionResponse.json();
-          latestVersion = versionData.version || versionData.latest || CURRENT_VERSION;
+          latestVersion = normalizeVersion(versionData.version || versionData.latest || CURRENT_VERSION);
           foundUpdate = compareVersions(latestVersion, CURRENT_VERSION) > 0;
+        } else {
+          console.warn('version.json fetch failed with status', versionResponse.status);
         }
       } catch (error) {
         // version.json doesn't exist, try alternative method
@@ -94,7 +98,7 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
         for (const version of versionsToCheck) {
           try {
             const testUrl = `${VERSION_CHECK_URL}${version}.exe`;
-            const response = await fetch(testUrl, { method: 'HEAD' });
+            const response = await fetch(testUrl, { method: 'HEAD', cache: 'no-cache' });
 
             if (response.ok) {
               latestVersion = version;
@@ -124,7 +128,8 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
       }
     } catch (error) {
       console.error('Error checking for updates:', error);
-      setUpdateStatus('Unable to check for updates. Please try again later.');
+      const hint = error instanceof Error ? error.message : '';
+      setUpdateStatus(`Unable to check for updates. Please try again later.${hint ? ` (${hint})` : ''}`);
     } finally {
       setIsCheckingUpdate(false);
 

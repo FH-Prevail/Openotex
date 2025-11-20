@@ -69,11 +69,11 @@ const Toolbar: React.FC<ToolbarProps> = ({
         <button
           className="toolbar-btn"
           onClick={() => onVersionFreeze()}
-          title={hasOpenFile ? "Version Freeze - Save current version in timeline folder (Ctrl+Shift+V)" : "Version Freeze - Open a file first"}
+          title={hasOpenFile ? "Instant Backup - Save a snapshot of the current file (Ctrl+Shift+V)" : "Instant Backup - Open a file first"}
           disabled={!hasOpenFile}
         >
           <FiClock size={18} />
-          <span>Version Freeze</span>
+          <span>Instant Backup</span>
         </button>
       </div>
 
@@ -153,4 +153,3 @@ const Toolbar: React.FC<ToolbarProps> = ({
 };
 
 export default Toolbar;
-

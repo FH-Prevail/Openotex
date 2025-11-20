@@ -7,6 +7,123 @@ import '../styles/Editor.css';
 // Configure Monaco to use local files instead of CDN
 loader.config({ monaco });
 
+// Core LaTeX snippets for quicker authoring
+const latexSnippets = [
+  {
+    label: 'figure',
+    detail: 'Figure environment with placeholder image',
+    documentation: 'Insert a figure with centering, caption, and label.',
+    insertText: [
+      '\\begin{figure}[ht]',
+      '\\centering',
+      '\\includegraphics[width=\\linewidth]{${1:image.png}}',
+      '\\caption{${2:Caption text}}',
+      '\\label{fig:${3:label}}',
+      '\\end{figure}',
+    ].join('\\n'),
+  },
+  {
+    label: 'table',
+    detail: 'Table with tabular and caption',
+    documentation: 'Insert a basic table with two columns.',
+    insertText: [
+      '\\begin{table}[ht]',
+      '\\centering',
+      '\\begin{tabular}{${1:ll}}',
+      '\\toprule',
+      '${2:Column A} & ${3:Column B} \\\\',
+      '\\midrule',
+      '${4:Value 1} & ${5:Value 2} \\\\',
+      '\\bottomrule',
+      '\\end{tabular}',
+      '\\caption{${6:Caption text}}',
+      '\\label{tab:${7:label}}',
+      '\\end{table}',
+    ].join('\\n'),
+  },
+  {
+    label: 'align',
+    detail: 'Aligned equations',
+    documentation: 'Multi-line aligned equations with labels.',
+    insertText: [
+      '\\begin{align}',
+      '  ${1:a} &= ${2:b} \\\\',
+      '  ${3:c} &= ${4:d}',
+      '\\label{eq:${5:label}}',
+      '\\end{align}',
+    ].join('\\n'),
+  },
+  {
+    label: 'equation',
+    detail: 'Single equation',
+    documentation: 'Equation environment with label.',
+    insertText: [
+      '\\begin{equation}',
+      '  ${1:E = mc^2}',
+      '\\label{eq:${2:label}}',
+      '\\end{equation}',
+    ].join('\\n'),
+  },
+  {
+    label: 'itemize',
+    detail: 'Itemize list',
+    documentation: 'Bulleted list with three items.',
+    insertText: [
+      '\\begin{itemize}',
+      '  \\item ${1:First item}',
+      '  \\item ${2:Second item}',
+      '  \\item ${3:Third item}',
+      '\\end{itemize}',
+    ].join('\\n'),
+  },
+  {
+    label: 'enumerate',
+    detail: 'Enumerated list',
+    documentation: 'Numbered list with three items.',
+    insertText: [
+      '\\begin{enumerate}',
+      '  \\item ${1:First item}',
+      '  \\item ${2:Second item}',
+      '  \\item ${3:Third item}',
+      '\\end{enumerate}',
+    ].join('\\n'),
+  },
+  {
+    label: 'theorem',
+    detail: 'Theorem environment',
+    documentation: 'Basic theorem statement with label.',
+    insertText: [
+      '\\begin{theorem}',
+      '  ${1:Statement of the theorem.}',
+      '\\label{thm:${2:label}}',
+      '\\end{theorem}',
+    ].join('\\n'),
+  },
+  {
+    label: 'proof',
+    detail: 'Proof environment',
+    documentation: 'Proof with placeholder text.',
+    insertText: [
+      '\\begin{proof}',
+      '  ${1:Proof details go here.}',
+      '\\end{proof}',
+    ].join('\\n'),
+  },
+  {
+    label: 'figure*',
+    detail: 'Wide figure',
+    documentation: 'Full-width figure for two-column layouts.',
+    insertText: [
+      '\\begin{figure*}[t]',
+      '\\centering',
+      '\\includegraphics[width=\\textwidth]{${1:image.png}}',
+      '\\caption{${2:Caption text}}',
+      '\\label{fig:${3:label}}',
+      '\\end{figure*}',
+    ].join('\\n'),
+  },
+];
+
 interface EditorProps {
   content: string;
   onChange: (content: string) => void;
@@ -55,6 +172,40 @@ const Editor = forwardRef<EditorHandle, EditorProps>(({
   useEffect(() => {
     annotationsRef.current = annotations;
   }, [annotations]);
+
+  // Register LaTeX snippets once
+  useEffect(() => {
+    const disposable = monaco.languages.registerCompletionItemProvider('latex', {
+      triggerCharacters: ['\\'],
+      provideCompletionItems: (model, position) => {
+        const linePrefix = model.getValueInRange(new monaco.Range(
+          position.lineNumber,
+          1,
+          position.lineNumber,
+          position.column
+        ));
+        const match = linePrefix.match(/\\([a-zA-Z]*)$/);
+        const prefix = match ? match[1].toLowerCase() : '';
+        const startColumn = Math.max(1, position.column - (prefix.length + 1));
+
+        const suggestions = latexSnippets
+          .filter(snippet => !prefix || snippet.label.toLowerCase().includes(prefix))
+          .map(snippet => ({
+            label: snippet.label,
+            kind: monaco.languages.CompletionItemKind.Snippet,
+            documentation: snippet.documentation,
+            detail: snippet.detail,
+            insertText: snippet.insertText,
+            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+            range: new monaco.Range(position.lineNumber, startColumn, position.lineNumber, position.column),
+          }));
+
+        return { suggestions };
+      },
+    });
+
+    return () => disposable?.dispose();
+  }, []);
 
   useEffect(() => {
     if (!editorRef.current) {

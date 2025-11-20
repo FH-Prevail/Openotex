@@ -17,28 +17,13 @@ import AboutDialog from './components/AboutDialog';
 import AnnotationDialog from './components/AnnotationDialog';
 import NewProjectDialog from './components/NewProjectDialog';
 import StatusBar from './components/StatusBar';
+import GitPanel from './components/GitPanel';
 import { Annotation, AnnotationRange } from '../types/annotations';
+import { CursorPosition, FileNode, PendingCursor, ProjectProvider, useProject } from './ProjectContext';
 import './styles/App.css';
 
 type ThemePreference = 'system' | 'dark' | 'light';
 type NotificationType = 'success' | 'error' | 'info';
-
-interface FileNode {
-    name: string;
-    path: string;
-    isDirectory: boolean;
-    content?: string;
-}
-
-interface CursorPosition {
-    lineNumber: number;
-    column: number;
-}
-
-interface PendingCursor {
-    path: string;
-    position: CursorPosition;
-}
 
 interface SelectionResult {
     text: string;
@@ -68,13 +53,32 @@ interface Position {
 
 const SESSION_FILENAME = '.openotex-session.yml';
 
-const App: React.FC = () => {
-    const [currentFile, setCurrentFile] = useState<FileNode | null>(null);
-    const [openTabs, setOpenTabs] = useState<FileNode[]>([]);
-    const [tabContents, setTabContents] = useState<Map<string, string>>(new Map());
-    const [editorContent, setEditorContent] = useState('');
+const AppContent: React.FC = () => {
+    const {
+        currentFile,
+        setCurrentFile,
+        openTabs,
+        setOpenTabs,
+        tabContents,
+        setTabContents,
+        editorContent,
+        setEditorContent,
+        projectPath,
+        setProjectPath,
+        tabAnnotations,
+        setTabAnnotations,
+        annotations,
+        setAnnotations,
+        annotationsHidden,
+        setAnnotationsHidden,
+        fileExplorerRefreshTrigger,
+        setFileExplorerRefreshTrigger,
+        cursorPositionsRef,
+        pendingCursorRef,
+        persistSessionTimeoutRef,
+        restoredSessionProjectRef,
+    } = useProject();
     const [compileNonce, setCompileNonce] = useState(0);
-    const [projectPath, setProjectPath] = useState('');
     const [autoCompile, setAutoCompile] = useState<boolean>(() => {
         try {
             const saved = localStorage.getItem('openotex:autoCompile');
@@ -111,14 +115,7 @@ const App: React.FC = () => {
     });
     const autoCompileTimeout = useRef<NodeJS.Timeout | null>(null);
     const editorRef = useRef<EditorHandle | null>(null);
-    const [annotations, setAnnotations] = useState<Annotation[]>([]);
-    const [annotationsHidden, setAnnotationsHidden] = useState<boolean>(true);
     const annotationsRef = useRef<Annotation[]>([]);
-    const cursorPositionsRef = useRef<Map<string, CursorPosition>>(new Map());
-    const pendingCursorRef = useRef<PendingCursor | null>(null);
-    const persistSessionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    const restoredSessionProjectRef = useRef<string | null>(null);
-    const [tabAnnotations, setTabAnnotations] = useState<Map<string, Annotation[]>>(new Map());
     const [highlightColor, setHighlightColor] = useState<string>(() => {
         try {
             return localStorage.getItem('openotex:highlightColor') || '#f8e71c';
@@ -170,8 +167,8 @@ const App: React.FC = () => {
     });
     const [statusMessage, setStatusMessage] = useState<string>('');
     const statusMessageTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    const [fileExplorerRefreshTrigger, setFileExplorerRefreshTrigger] = useState<number>(0);
     const [showStructureMap, setShowStructureMap] = useState<boolean>(false);
+    const [leftPanelTab, setLeftPanelTab] = useState<'files' | 'git'>('files');
     const currentFileExtension = useMemo(() => {
         if (!currentFile || currentFile.isDirectory) {
             return null;
@@ -1549,14 +1546,14 @@ Your conclusions go here.
             const fileExt = pathModule.extname(fileName);
             const fileNameWithoutExt = pathModule.basename(fileName, fileExt);
 
-            // Create timeline folder name
-            const timelineFolderName = `${fileName}_timeline_`;
+            // Create backup folder name
+            const timelineFolderName = `${fileName}_backups_`;
             const timelineFolderPath = pathModule.join(fileDir, timelineFolderName);
 
             // Create timeline folder if it doesn't exist
             const createDirResult = await api.createDirectory( timelineFolderPath);
             if (!createDirResult.success && !createDirResult.error?.includes('already exists')) {
-                showNotification('Version Freeze Failed', `Failed to create timeline folder: ${createDirResult.error}`, 'error');
+                showNotification('Instant Backup Failed', `Failed to create backup folder: ${createDirResult.error}`, 'error');
                 return;
             }
 
@@ -1571,7 +1568,7 @@ Your conclusions go here.
             const timestamp = `${year}-${month}-${day}_${hours}-${minutes}-${seconds}`;
 
             // Create versioned file name
-            const versionedFileName = `${fileNameWithoutExt}_${timestamp}${fileExt}`;
+            const versionedFileName = `${fileNameWithoutExt}_backup_${timestamp}${fileExt}`;
             const versionedFilePath = pathModule.join(timelineFolderPath, versionedFileName);
 
             // Get content to save (from editor if it's the current file, otherwise read from disk)
@@ -1581,7 +1578,7 @@ Your conclusions go here.
             } else {
                 const readResult = await api.readFile( targetFile.path);
                 if (!readResult.success) {
-                    showNotification('Version Freeze Failed', `Failed to read file: ${readResult.error}`, 'error');
+                    showNotification('Instant Backup Failed', `Failed to read file: ${readResult.error}`, 'error');
                     return;
                 }
                 contentToSave = readResult.content;
@@ -1590,19 +1587,19 @@ Your conclusions go here.
             // Save versioned file
             const writeResult = await api.writeFile( versionedFilePath, contentToSave);
             if (!writeResult.success) {
-                showNotification('Version Freeze Failed', `Failed to save version: ${writeResult.error}`, 'error');
+                showNotification('Instant Backup Failed', `Failed to save backup: ${writeResult.error}`, 'error');
                 return;
             }
 
             // Show success message in status bar
-            showStatusMessage(`Version Freeze: ${versionedFileName} saved successfully`);
+            showStatusMessage(`Instant Backup: ${versionedFileName} saved successfully`);
 
             // Trigger FileExplorer refresh to show the new timeline folder
             setFileExplorerRefreshTrigger(prev => prev + 1);
         } catch (error) {
-            console.error('Version Freeze error:', error);
+            console.error('Instant Backup error:', error);
             const errorMessage = error instanceof Error ? error.message : String(error);
-            showNotification('Version Freeze Failed', `Error: ${errorMessage}`, 'error');
+            showNotification('Instant Backup Failed', `Error: ${errorMessage}`, 'error');
         }
     }, [currentFile, editorContent, showNotification, showStatusMessage]);
 
@@ -1806,13 +1803,33 @@ Your conclusions go here.
                     cursor="col-resize"
                 >
                     <div className="panel file-explorer-panel">
-                        <FileExplorer
-                            onFileSelect={handleFileSelect}
-                            projectPath={projectPath}
-                            onZipFolder={handleSaveFolderAsZip}
-                            onVersionFreeze={handleVersionFreeze}
-                            refreshTrigger={fileExplorerRefreshTrigger}
-                        />
+                        <div className="panel-toggle">
+                            <button
+                                className={leftPanelTab === 'files' ? 'active' : ''}
+                                onClick={() => setLeftPanelTab('files')}
+                            >
+                                Files
+                            </button>
+                            <button
+                                className={leftPanelTab === 'git' ? 'active' : ''}
+                                onClick={() => setLeftPanelTab('git')}
+                            >
+                                Git
+                            </button>
+                        </div>
+                        <div className="panel-body">
+                            {leftPanelTab === 'files' ? (
+                                <FileExplorer
+                                    onFileSelect={handleFileSelect}
+                                    projectPath={projectPath}
+                                    onZipFolder={handleSaveFolderAsZip}
+                                    onVersionFreeze={handleVersionFreeze}
+                                    refreshTrigger={fileExplorerRefreshTrigger}
+                                />
+                            ) : (
+                                <GitPanel projectPath={projectPath} />
+                            )}
+                        </div>
                     </div>
                     <div className="panel editor-panel">
                         <div className="editor-stack">
@@ -1922,6 +1939,12 @@ Your conclusions go here.
     </div>
     );
 };
+
+const App: React.FC = () => (
+    <ProjectProvider>
+        <AppContent />
+    </ProjectProvider>
+);
 
 export default App;
 

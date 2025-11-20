@@ -49,6 +49,45 @@
   border-right: 1px solid var(--color-border-strong);
 }
 
+.panel-toggle {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--color-border-strong);
+}
+
+.panel-toggle button {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-strong);
+  background: none;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s, color 0.2s;
+}
+
+.panel-toggle button.active {
+  border-color: var(--color-accent);
+  background-color: var(--color-accent-muted, #2f80ed1a);
+  color: var(--color-text-primary);
+}
+
+.panel-toggle button:hover:not(.active) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.panel-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.panel-body > * {
+  flex: 1;
+}
+
 .editor-panel {
   background-color: var(--color-bg-primary);
   border-right: 1px solid var(--color-border-strong);

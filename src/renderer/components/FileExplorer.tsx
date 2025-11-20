@@ -727,7 +727,7 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
               {!contextMenu.target.isDirectory && (
                 <div className="context-menu-item" onClick={handleVersionFreezeFile}>
                   <FiClock size={14} />
-                  <span>Version Freeze</span>
+                <span>Instant Backup</span>
                 </div>
               )}
               <div className="context-menu-item" onClick={handleShowInFileBrowser}>

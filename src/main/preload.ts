@@ -73,6 +73,14 @@ contextBridge.exposeInMainWorld('api', {
       return () => ipcRenderer.removeListener('git-terminal-exit', handler);
     }
   },
+  git: {
+    status: (cwd: string) => ipcRenderer.invoke('git-status', { cwd }),
+    commit: (payload: { cwd: string; message: string }) => ipcRenderer.invoke('git-commit', payload),
+    pull: (cwd: string) => ipcRenderer.invoke('git-pull', { cwd }),
+    push: (cwd: string) => ipcRenderer.invoke('git-push', { cwd }),
+    init: (cwd: string) => ipcRenderer.invoke('git-init', { cwd }),
+    check: () => ipcRenderer.invoke('git-check'),
+  },
 
   // Minimal path helpers (Node path in preload)
   path: {
