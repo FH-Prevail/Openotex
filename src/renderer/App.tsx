@@ -1297,7 +1297,7 @@ Your conclusions go here.
                     // Delay the check by 3 seconds to let the app fully load
                     setTimeout(async () => {
                         try {
-                            const CURRENT_VERSION = '1.0.2';
+                            const CURRENT_VERSION = '1.0.3';
                             const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
                             const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
 
