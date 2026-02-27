@@ -80,6 +80,23 @@
   height: 100%;
 }
 
+/* pdfjs canvas rendering — fills the preview body and scrolls independently */
+.pdf-canvas-container {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: auto;
+  padding: 16px 0;
+  box-sizing: border-box;
+  background-color: var(--color-bg-primary);
+}
+
+.pdf-page-canvas {
+  display: block;
+  margin: 0 auto 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
 .preview-empty {
   display: flex;
   flex-direction: column;

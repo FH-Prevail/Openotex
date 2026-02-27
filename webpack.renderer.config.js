@@ -80,6 +80,10 @@ module.exports = {
           from: 'assets',
           to: 'assets',
           noErrorOnMissing: true
+        },
+        {
+          from: 'node_modules/pdfjs-dist/build/pdf.worker.min.js',
+          to: 'pdf.worker.min.js'
         }
       ]
     })

@@ -1,6 +1,6 @@
 {
   "name": "openotex",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "A modern, open-source LaTeX editor for desktop",
   "main": "dist/main.js",
   "scripts": {

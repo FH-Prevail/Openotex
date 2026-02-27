@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"const pkg = require\\(''./node_modules/pdfjs-dist/package.json''\\); console.log\\(JSON.stringify\\({main: pkg.main, module: pkg.module, exports: typeof pkg.exports}, null, 2\\)\\)\")",
+      "Bash(node -e \"const pkg = require\\(''./node_modules/pdfjs-dist/package.json''\\); console.log\\(pkg.types || pkg.typings\\)\")",
+      "Bash(npm run build)"
+    ]
+  }
+}

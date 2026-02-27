@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FiRefreshCw, FiZoomIn, FiZoomOut, FiDownload, FiAlertCircle } from 'react-icons/fi';
+import * as pdfjsLib from 'pdfjs-dist';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 import NotificationDialog from './NotificationDialog';
 import '../styles/Preview.css';
 import '../styles/Preview-addon.css';
+
+// The worker is copied to the dist output folder by CopyWebpackPlugin.
+(pdfjsLib as any).GlobalWorkerOptions.workerSrc = './pdf.worker.min.js';
 
 interface PreviewProps {
   content: string;
@@ -48,15 +53,25 @@ const Preview: React.FC<PreviewProps> = ({
   );
   const isLatexFile = fileExtension === 'tex' || fileExtension === 'latex';
   const isMarkdownFile = fileExtension === 'md' || fileExtension === 'markdown';
+
   const latestCompileRequestRef = useRef(0);
 
+  // pdfjs state
+  const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Scroll position to restore after re-render (pixels, saved before each render)
+  const savedScrollRef = useRef(0);
+  // Monotonically increasing counter; incremented on each render start so that
+  // a superseded render can detect it has been cancelled.
+  const renderVersionRef = useRef(0);
+  // Previous zoom level, used to scale the saved scroll position proportionally.
+  const prevZoomRef = useRef(zoom);
+
   useEffect(() => {
-    // Only check LaTeX availability once per session; harmless if not a LaTeX file.
     checkLatexInstallation();
   }, []);
 
   useEffect(() => {
-    // Listen for compilation status updates (font/package installation)
     const dispose = (window as any).api.onCompilationStatus((status: { stage: string; message: string }) => {
       setCompilationStatus(status.message);
       if (status.stage === 'font-installation' || status.stage === 'package-installation') {
@@ -71,7 +86,6 @@ const Preview: React.FC<PreviewProps> = ({
   const checkLatexInstallation = async () => {
     try {
       const result = await (window as any).api.checkLatexInstallation();
-
       if (result.success) {
         setLatexInstalled(result.installed);
         if (result.installed) {
@@ -86,28 +100,123 @@ const Preview: React.FC<PreviewProps> = ({
 
   const detectMissingPackages = (errorLog: string): string[] => {
     const packages: Set<string> = new Set();
-
-    // Pattern: ! LaTeX Error: File `package.sty' not found.
     const pattern1 = /File `([^']+)\.sty' not found/gi;
     let match;
     while ((match = pattern1.exec(errorLog)) !== null) {
       packages.add(match[1]);
     }
-
-    // Pattern: ! LaTeX Error: Missing \usepackage{package}
     const pattern2 = /Missing \\usepackage\{([^}]+)\}/gi;
     while ((match = pattern2.exec(errorLog)) !== null) {
       packages.add(match[1]);
     }
-
-    // Pattern: Package package not found
     const pattern3 = /Package ([a-zA-Z0-9\-]+) not found/gi;
     while ((match = pattern3.exec(errorLog)) !== null) {
       packages.add(match[1]);
     }
-
     return Array.from(packages);
   };
+
+  // Render all pages of `doc` at the given zoom level into containerRef.
+  // Saves the current scroll position before clearing, then restores it after
+  // all pages are appended so the user's reading position is preserved.
+  const renderAllPages = useCallback(async (doc: PDFDocumentProxy, zoomLevel: number) => {
+    if (!containerRef.current) return;
+    const container = containerRef.current;
+    const scrollToRestore = savedScrollRef.current;
+
+    // Stamp this render; if it changes before we finish, we were superseded.
+    const version = ++renderVersionRef.current;
+    container.innerHTML = '';
+
+    const scale = zoomLevel / 100;
+
+    for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+      if (renderVersionRef.current !== version) return;
+
+      const page = await doc.getPage(pageNum);
+      if (renderVersionRef.current !== version) {
+        page.cleanup();
+        return;
+      }
+
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvas.className = 'pdf-page-canvas';
+      container.appendChild(canvas);
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { page.cleanup(); continue; }
+
+      try {
+        await page.render({ canvasContext: ctx, viewport }).promise;
+      } catch {
+        // Render was cancelled (new render started or zoom changed).
+        page.cleanup();
+        return;
+      }
+      page.cleanup();
+    }
+
+    // All pages are in the DOM — restore scroll position.
+    if (renderVersionRef.current === version) {
+      container.scrollTop = scrollToRestore;
+    }
+  }, []);
+
+  // Load (or unload) the PDF document whenever the compiled pdfData changes.
+  useEffect(() => {
+    if (!pdfData) {
+      pdfDocRef.current?.destroy();
+      pdfDocRef.current = null;
+      renderVersionRef.current++; // cancel any ongoing render
+      if (containerRef.current) containerRef.current.innerHTML = '';
+      return;
+    }
+
+    // Save the current scroll position before we start re-rendering.
+    if (containerRef.current) {
+      savedScrollRef.current = containerRef.current.scrollTop;
+    }
+
+    const bytes = atob(pdfData);
+    const data = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) data[i] = bytes.charCodeAt(i);
+
+    const loadingTask = pdfjsLib.getDocument({ data });
+    loadingTask.promise
+      .then(doc => {
+        pdfDocRef.current?.destroy();
+        pdfDocRef.current = doc;
+        renderAllPages(doc, zoom);
+      })
+      .catch(err => console.error('Failed to load PDF:', err));
+
+    return () => { loadingTask.destroy().catch(() => {}); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfData, renderAllPages]);
+  // Note: `zoom` is intentionally omitted — zoom changes are handled by the
+  // separate effect below so we don't reload the document on every zoom.
+
+  // Re-render at the new zoom level whenever the user zooms in/out.
+  useEffect(() => {
+    const doc = pdfDocRef.current;
+    if (!doc) {
+      prevZoomRef.current = zoom;
+      return;
+    }
+
+    // Scale the saved scroll position proportionally so the same document
+    // region stays visible after the canvas sizes change.
+    if (containerRef.current) {
+      const ratio = zoom / (prevZoomRef.current || zoom);
+      savedScrollRef.current = containerRef.current.scrollTop * ratio;
+    }
+    prevZoomRef.current = zoom;
+
+    renderAllPages(doc, zoom);
+  }, [zoom, renderAllPages]);
 
   const compileLatex = useCallback(async () => {
     if (!isLatexFile || !currentFilePath) {
@@ -162,13 +271,11 @@ const Preview: React.FC<PreviewProps> = ({
     }
   }, [isLatexFile, currentFilePath, latexEngine, onMissingPackages]);
 
-  // Trigger compilation when content, engine, or file changes
   useEffect(() => {
     if (isLatexFile && latexInstalled && compileNonce > 0) {
       compileLatex();
     } else if (!isLatexFile) {
       latestCompileRequestRef.current += 1;
-      // Reset LaTeX-related state when switching to another file type.
       setIsCompiling(false);
       setCompilationStatus('');
       setError('');
@@ -310,17 +417,7 @@ const Preview: React.FC<PreviewProps> = ({
       </div>
       <div className="preview-body">
         {pdfData ? (
-          <iframe
-            title="PDF Preview"
-            src={`data:application/pdf;base64,${pdfData}`}
-            style={{
-              width: '100%',
-              height: '100%',
-              border: 'none',
-              transform: `scale(${zoom / 100})`,
-              transformOrigin: 'top left'
-            }}
-          />
+          <div ref={containerRef} className="pdf-canvas-container" />
         ) : (
           <div className="preview-empty">
             <p>No PDF compiled yet.</p>

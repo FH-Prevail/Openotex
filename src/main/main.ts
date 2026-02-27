@@ -34,8 +34,10 @@ const spawnCollect = (command: string, args: string[], options: any = {}, timeou
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let timedOut = false;
     const timer = setTimeout(() => {
       if (!settled) {
+        timedOut = true;
         try { child.kill(); } catch {}
       }
     }, timeoutMs);
@@ -50,13 +52,22 @@ const spawnCollect = (command: string, args: string[], options: any = {}, timeou
       (err as any).stderr = stderr;
       reject(err);
     });
-    child.on('exit', (code) => {
+    child.on('exit', (code, signal) => {
       clearTimeout(timer);
       if (settled) return;
       settled = true;
-      if (code && code !== 0) {
+      if (timedOut) {
+        const error: any = new Error(`Process timed out after ${timeoutMs / 1000}s`);
+        error.stdout = stdout; error.stderr = stderr;
+        reject(error);
+      } else if (code !== null && code !== 0) {
         const error: any = new Error(`Process exited with code ${code}`);
         error.stdout = stdout; error.stderr = stderr; error.code = code;
+        reject(error);
+      } else if (signal) {
+        // Killed by an external signal (not by our timeout handler)
+        const error: any = new Error(`Process killed by signal ${signal}`);
+        error.stdout = stdout; error.stderr = stderr;
         reject(error);
       } else {
         resolve({ stdout, stderr, code });
@@ -392,6 +403,18 @@ function createWindow() {
     });
     fileWatchers.clear();
     mainWindow = null;
+  });
+
+  // Clean up watchers and sessions if the renderer crashes (window stays open)
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.warn('Renderer process gone:', details.reason);
+    const senderId = mainWindow?.webContents.id;
+    if (senderId != null) {
+      stopWatcherForSender(senderId);
+      const session = gitTerminalSessions.get(senderId);
+      try { session?.proc?.kill(); } catch {}
+      gitTerminalSessions.delete(senderId);
+    }
   });
 }
 
@@ -951,7 +974,13 @@ const detectFontError = (output: string): { hasError: boolean; packageName?: str
     /ecrm\d+\.mf/i,
     /Font shape.*undefined/i,
     /Font family.*undefined/i,
-    /Font encoding.*not available/i
+    /Font encoding.*not available/i,
+    // XeLaTeX / LuaLaTeX font errors
+    /fontspec error/i,
+    /I can't find file `[^']+\.tfm'/i,
+    /No file .+\.tfm/i,
+    /kpathsea: Running mktextfm/i,
+    /mktextfm: `[^']+' not found/i,
   ];
 
   const hasError = fontErrorPatterns.some(pattern => pattern.test(output));
@@ -1009,7 +1038,18 @@ const needsRecompilation = (output: string): boolean => {
     /Label\(s\) may have changed/i,
     /Citation.*undefined/i,
     /Reference.*undefined/i,
-    /Rerun to get outlines right/i
+    /Rerun to get outlines right/i,
+    // Glossaries package
+    /Rerun to get glossary right/i,
+    /Package glossaries Warning.*Rerun/i,
+    // Index / nomenclature
+    /Rerun to get index right/i,
+    /Package rerunfilecheck Warning/i,
+    // Long tables spanning pages
+    /Package longtable Warning.*rerun/i,
+    // tocbibind / hyperref
+    /Rerun to get bookmarks right/i,
+    /rerunfilecheck Warning/i,
   ];
   return recompilePatterns.some(pattern => pattern.test(output));
 };
@@ -1116,6 +1156,7 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
     const args = [
       '-interaction=nonstopmode',
       '-halt-on-error',
+      '-file-line-error',  // emit errors as file:line:message for easier parsing
       '-synctex=1',
       `-output-directory=${dir}`,
       texFilePath
@@ -1123,13 +1164,15 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
 
     console.log('Compiling LaTeX with', engine, 'args:', args.join(' '));
 
+    // Allow up to 5 minutes per pass — large documents or first-time package
+    // downloads can easily exceed the old 2-minute limit.
     const runLatexEngine = async () => {
-      return spawnCollect(engine, args, { cwd: dir }, 120000);
+      return spawnCollect(engine, args, { cwd: dir }, 300000);
     };
 
     let currentAttempt: { stdout: string; stderr: string } | undefined;
     let attemptCount = 0;
-    const maxAttempts = 5; // Maximum compilation attempts
+    const maxAttempts = 8; // Raised from 5 — complex cross-ref/glossary docs may need more passes
     let installedPackages = new Set<string>(); // Track installed packages to avoid loops
     let attemptedFontFallback = false;
 
@@ -1154,7 +1197,7 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
         const errorOutput = (error.stdout || '') + (error.stderr || '');
 
         // Check for citation/bibliography errors - clean auxiliary files and retry
-        if (detectCitationError(errorOutput) && attemptCount === 1) {
+        if (detectCitationError(errorOutput) && attemptCount <= 2) {
           console.log('Citation error detected, cleaning auxiliary files...');
 
           event.sender.send('compilation-status', {
@@ -1298,28 +1341,70 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
     let combinedStdout = stdout;
     let combinedStderr = stderr;
 
-    let ranBibtex = false;
+    let ranPostProcessor = false;
+
+    // --- Bibliography: Biber (biblatex) or BibTeX (classic) ---
+    const bcfPath = path.join(dir, `${filename}.bcf`);
     try {
-      const auxContent = await fs.readFile(auxPath, 'utf-8');
-      if (auxContent.includes('\\bibdata') || auxContent.includes('\\citation')) {
-        console.log('Running BibTeX:', filename);
-        const { stdout: bibStdout, stderr: bibStderr } = await execFileAsync('bibtex', [filename], { cwd: dir });
-        combinedStdout += `\n\n[BibTeX]\n${bibStdout}`;
-        combinedStderr += `\n\n[BibTeX]\n${bibStderr}`;
-        ranBibtex = true;
+      const bcfExists = await pathExists(bcfPath);
+      if (bcfExists) {
+        // biblatex + biber workflow
+        console.log('Running Biber:', filename);
+        event.sender.send('compilation-status', { stage: 'biber', message: 'Running Biber bibliography processor...' });
+        try {
+          const { stdout: biberOut, stderr: biberErr } = await execFileAsync('biber', [filename], { cwd: dir, timeout: 120000 } as any);
+          combinedStdout += `\n\n[Biber]\n${biberOut}`;
+          combinedStderr += `\n\n[Biber]\n${biberErr}`;
+          ranPostProcessor = true;
+        } catch (biberErr: any) {
+          console.warn('Biber failed:', biberErr);
+          combinedStdout += `\n\n[Biber - failed]\n${biberErr.stdout || ''}`;
+          combinedStderr += `\n\n[Biber - failed]\n${biberErr.stderr || ''}`;
+        }
+      } else {
+        // Classic BibTeX workflow
+        const auxContent = await fs.readFile(auxPath, 'utf-8');
+        if (auxContent.includes('\\bibdata') || auxContent.includes('\\citation')) {
+          console.log('Running BibTeX:', filename);
+          event.sender.send('compilation-status', { stage: 'bibtex', message: 'Running BibTeX bibliography processor...' });
+          const { stdout: bibOut, stderr: bibErr } = await execFileAsync('bibtex', [filename], { cwd: dir, timeout: 120000 } as any);
+          combinedStdout += `\n\n[BibTeX]\n${bibOut}`;
+          combinedStderr += `\n\n[BibTeX]\n${bibErr}`;
+          ranPostProcessor = true;
+        }
       }
     } catch (bibError) {
-      console.warn('BibTeX step skipped or failed:', bibError);
+      console.warn('Bibliography step skipped or failed:', bibError);
     }
 
-    if (ranBibtex) {
-      const secondPass = await runLatexEngine();
-      combinedStdout += `\n\n[Re-run 1]\n${secondPass.stdout}`;
-      combinedStderr += `\n\n[Re-run 1]\n${secondPass.stderr}`;
+    // --- Index: MakeIndex ---
+    const idxPath = path.join(dir, `${filename}.idx`);
+    try {
+      if (await pathExists(idxPath)) {
+        console.log('Running MakeIndex:', filename);
+        event.sender.send('compilation-status', { stage: 'makeindex', message: 'Generating document index...' });
+        const { stdout: idxOut, stderr: idxErr } = await execFileAsync('makeindex', [`${filename}.idx`], { cwd: dir, timeout: 60000 } as any);
+        combinedStdout += `\n\n[MakeIndex]\n${idxOut}`;
+        combinedStderr += `\n\n[MakeIndex]\n${idxErr}`;
+        ranPostProcessor = true;
+      }
+    } catch (idxError) {
+      console.warn('MakeIndex step skipped or failed:', idxError);
+    }
 
-      const thirdPass = await runLatexEngine();
-      combinedStdout += `\n\n[Re-run 2]\n${thirdPass.stdout}`;
-      combinedStderr += `\n\n[Re-run 2]\n${thirdPass.stderr}`;
+    // --- Final passes: recompile until stable or limit reached ---
+    if (ranPostProcessor) {
+      const maxFinalPasses = 3;
+      for (let pass = 1; pass <= maxFinalPasses; pass++) {
+        event.sender.send('compilation-status', {
+          stage: 'retry',
+          message: `Finalizing document (pass ${pass}/${maxFinalPasses})...`
+        });
+        const finalPass = await runLatexEngine();
+        combinedStdout += `\n\n[Final pass ${pass}]\n${finalPass.stdout}`;
+        combinedStderr += `\n\n[Final pass ${pass}]\n${finalPass.stderr}`;
+        if (!needsRecompilation(finalPass.stdout + finalPass.stderr)) break;
+      }
     }
 
     // Check if PDF was created

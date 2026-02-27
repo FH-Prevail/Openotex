@@ -7,7 +7,7 @@ interface AboutDialogProps {
   onClose: () => void;
 }
 
-const CURRENT_VERSION = '1.0.3';
+const CURRENT_VERSION = '1.0.4';
 const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
 const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
 
@@ -216,7 +216,7 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
           </div>
 
           <div className="about-footer">
-            <p>&copy; 2025 Openotex team.</p>
+            <p>&copy; 2026 Openotex team.</p>
           </div>
         </div>
       </div>
