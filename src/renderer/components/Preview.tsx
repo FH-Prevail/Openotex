@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, forwardRef, useImperativeHandle } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { FiRefreshCw, FiZoomIn, FiZoomOut, FiDownload, FiAlertCircle } from 'react-icons/fi';
+import { FiRefreshCw, FiZoomIn, FiZoomOut, FiDownload, FiAlertCircle, FiHelpCircle } from 'react-icons/fi';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import NotificationDialog from './NotificationDialog';
@@ -10,6 +10,12 @@ import '../styles/Preview-addon.css';
 // The worker is copied to the dist output folder by CopyWebpackPlugin.
 (pdfjsLib as any).GlobalWorkerOptions.workerSrc = './pdf.worker.min.js';
 
+type SynctexRect = { page: number; h: number; v: number; W: number; H: number };
+
+export interface PreviewHandle {
+  forwardSearch: (line: number, column?: number) => Promise<void>;
+}
+
 interface PreviewProps {
   content: string;
   compileNonce: number;
@@ -17,17 +23,20 @@ interface PreviewProps {
   currentFilePath: string | null;
   latexEngine?: 'pdflatex' | 'xelatex' | 'lualatex';
   onMissingPackages?: (packages: string[]) => void;
+  onSyncTexJump?: (target: { file: string; line: number; column: number }) => void;
 }
 
-const Preview: React.FC<PreviewProps> = ({
+const Preview = forwardRef<PreviewHandle, PreviewProps>(({
   content,
   compileNonce,
   currentFileExtension,
   currentFilePath,
   latexEngine = 'pdflatex',
   onMissingPackages,
-}) => {
+  onSyncTexJump,
+}, ref) => {
   const [pdfData, setPdfData] = useState<string>('');
+  const [pdfPath, setPdfPath] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
   const [compilationStatus, setCompilationStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -66,6 +75,16 @@ const Preview: React.FC<PreviewProps> = ({
   const renderVersionRef = useRef(0);
   // Previous zoom level, used to scale the saved scroll position proportionally.
   const prevZoomRef = useRef(zoom);
+  // SyncTeX: per-page wrapper elements, indexed by pageNum (1-based).
+  const pageWrappersRef = useRef<Array<HTMLDivElement | null>>([]);
+  // Mirror of the current zoom so imperative handle doesn't need stale closures.
+  const zoomRef = useRef(zoom);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+  // Most-recent pdfPath, used inside click handlers.
+  const pdfPathRef = useRef(pdfPath);
+  useEffect(() => { pdfPathRef.current = pdfPath; }, [pdfPath]);
+  const onSyncTexJumpRef = useRef(onSyncTexJump);
+  useEffect(() => { onSyncTexJumpRef.current = onSyncTexJump; }, [onSyncTexJump]);
 
   useEffect(() => {
     checkLatexInstallation();
@@ -127,6 +146,7 @@ const Preview: React.FC<PreviewProps> = ({
     // Stamp this render; if it changes before we finish, we were superseded.
     const version = ++renderVersionRef.current;
     container.innerHTML = '';
+    pageWrappersRef.current = [];
 
     const scale = zoomLevel / 100;
 
@@ -140,11 +160,20 @@ const Preview: React.FC<PreviewProps> = ({
       }
 
       const viewport = page.getViewport({ scale });
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'pdf-page-wrapper synctex-enabled';
+      wrapper.dataset.pageNum = String(pageNum);
+      wrapper.style.width = `${viewport.width}px`;
+      wrapper.style.height = `${viewport.height}px`;
+
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       canvas.className = 'pdf-page-canvas';
-      container.appendChild(canvas);
+      wrapper.appendChild(canvas);
+      container.appendChild(wrapper);
+      pageWrappersRef.current[pageNum] = wrapper;
 
       const ctx = canvas.getContext('2d');
       if (!ctx) { page.cleanup(); continue; }
@@ -241,6 +270,7 @@ const Preview: React.FC<PreviewProps> = ({
 
       if (result.success) {
         setPdfData(result.pdfData);
+        setPdfPath(result.pdfPath || '');
         setCompilationLog(result.log);
         setError('');
         setCompilationStatus('Compilation successful');
@@ -248,6 +278,7 @@ const Preview: React.FC<PreviewProps> = ({
         setError(result.error || 'Compilation failed');
         setCompilationLog(result.log || '');
         setPdfData('');
+        setPdfPath('');
         setCompilationStatus('');
 
         const fullLog = (result.log || '') + '\n' + (result.details || '');
@@ -263,6 +294,7 @@ const Preview: React.FC<PreviewProps> = ({
       setError(`Compilation Error: ${err.message}`);
       console.error('Error compiling LaTeX:', err);
       setPdfData('');
+      setPdfPath('');
       setCompilationStatus('');
     } finally {
       if (latestCompileRequestRef.current === requestId) {
@@ -281,8 +313,117 @@ const Preview: React.FC<PreviewProps> = ({
       setError('');
       setCompilationLog('');
       setPdfData('');
+      setPdfPath('');
     }
   }, [compileNonce, latexInstalled, isLatexFile, latexEngine, compileLatex]);
+
+  // Flash a pulsing rectangle overlay on the given pages. Auto-removed after animation.
+  const flashSynctexRects = useCallback((rects: SynctexRect[]) => {
+    if (!rects.length) return;
+    const scale = zoomRef.current / 100;
+    const createdEls: HTMLDivElement[] = [];
+    let firstEl: HTMLDivElement | null = null;
+
+    rects.forEach(rect => {
+      const wrapper = pageWrappersRef.current[rect.page];
+      if (!wrapper) return;
+      const el = document.createElement('div');
+      el.className = 'pdf-synctex-highlight';
+      // Pad a little so the highlight doesn't sit flush against the text.
+      const pad = 2;
+      el.style.left = `${Math.max(0, rect.h * scale - pad)}px`;
+      el.style.top = `${Math.max(0, rect.v * scale - rect.H * scale - pad)}px`;
+      el.style.width = `${Math.max(4, rect.W * scale + pad * 2)}px`;
+      el.style.height = `${Math.max(4, rect.H * scale + pad * 2)}px`;
+      wrapper.appendChild(el);
+      createdEls.push(el);
+      if (!firstEl) firstEl = el;
+    });
+
+    if (firstEl) {
+      (firstEl as HTMLDivElement).scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    window.setTimeout(() => {
+      createdEls.forEach(el => { try { el.remove(); } catch {} });
+    }, 2000);
+  }, []);
+
+  // Ctrl/Cmd + click on the PDF → inverse search (jump to source).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleClick = async (ev: MouseEvent) => {
+      if (!(ev.ctrlKey || ev.metaKey)) return;
+      const target = ev.target as HTMLElement | null;
+      if (!target) return;
+      const wrapper = target.closest('.pdf-page-wrapper') as HTMLDivElement | null;
+      if (!wrapper) return;
+      const pageNumStr = wrapper.dataset.pageNum;
+      const pageNum = pageNumStr ? parseInt(pageNumStr, 10) : NaN;
+      if (!Number.isFinite(pageNum) || pageNum <= 0) return;
+      const currentPdfPath = pdfPathRef.current;
+      if (!currentPdfPath) return;
+
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      const canvas = wrapper.querySelector('canvas') as HTMLCanvasElement | null;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const scale = zoomRef.current / 100;
+      const h = (ev.clientX - rect.left) / scale;
+      const v = (ev.clientY - rect.top) / scale;
+
+      try {
+        const api = (window as any).api;
+        const result = await api.synctex.inverse(currentPdfPath, pageNum, h, v);
+        if (result?.success && result.file && result.line) {
+          onSyncTexJumpRef.current?.({
+            file: result.file,
+            line: result.line,
+            column: result.column || 1,
+          });
+        } else if (result?.error) {
+          console.warn('SyncTeX inverse search failed:', result.error);
+        }
+      } catch (err) {
+        console.error('SyncTeX inverse search error:', err);
+      }
+    };
+
+    container.addEventListener('click', handleClick);
+    return () => container.removeEventListener('click', handleClick);
+  }, [pdfData]);
+
+  useImperativeHandle(ref, () => ({
+    forwardSearch: async (line: number, column?: number) => {
+      if (!currentFilePath) return;
+      try {
+        const api = (window as any).api;
+        const result = await api.synctex.forward(currentFilePath, line, column ?? 1);
+        if (result?.success && result.rects && result.rects.length > 0) {
+          flashSynctexRects(result.rects);
+        } else if (result?.error) {
+          setNotification({
+            isOpen: true,
+            title: 'SyncTeX Forward Search',
+            message: result.error,
+            type: 'info',
+          });
+        }
+      } catch (err: any) {
+        console.error('SyncTeX forward search error:', err);
+        setNotification({
+          isOpen: true,
+          title: 'SyncTeX Forward Search',
+          message: err?.message || 'Forward search failed.',
+          type: 'error',
+        });
+      }
+    },
+  }), [currentFilePath, flashSynctexRects]);
 
   const handleZoomIn = () => {
     setZoom(prev => Math.min(prev + 10, 200));
@@ -410,6 +551,20 @@ const Preview: React.FC<PreviewProps> = ({
             <FiZoomOut size={16} />
           </button>
           <span className="preview-zoom">{zoom}%</span>
+          <button
+            type="button"
+            title={'SyncTeX shortcuts:\n  • Ctrl+Click in PDF → jump to source\n  • Ctrl+Alt+J in editor → jump to PDF'}
+            onClick={() => setNotification({
+              isOpen: true,
+              title: 'SyncTeX Shortcuts',
+              message:
+                'Ctrl+Click on the PDF to jump to the matching source line.\n\n' +
+                'Place the cursor in the editor and press Ctrl+Alt+J to jump to the matching location in the PDF (with a pulsing highlight).',
+              type: 'info',
+            })}
+          >
+            <FiHelpCircle size={16} />
+          </button>
           <button type="button" title="Export PDF" onClick={handleExportPDF}>
             <FiDownload size={16} />
           </button>
@@ -443,6 +598,8 @@ const Preview: React.FC<PreviewProps> = ({
       />
     </div>
   );
-};
+});
+
+Preview.displayName = 'Preview';
 
 export default Preview;

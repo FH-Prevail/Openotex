@@ -24,6 +24,30 @@ declare global {
       openLatexDownload: () => Promise<any>;
       compileLatex: (texFilePath: string, engine: 'pdflatex' | 'xelatex' | 'lualatex') => Promise<any>;
       onCompilationStatus: (listener: (status: { stage: string; message: string }) => void) => () => void;
+      synctex: {
+        forward: (
+          texFile: string,
+          line: number,
+          column: number
+        ) => Promise<{
+          success: boolean;
+          rects?: Array<{ page: number; h: number; v: number; W: number; H: number }>;
+          pdfFile?: string;
+          error?: string;
+        }>;
+        inverse: (
+          pdfFile: string,
+          page: number,
+          h: number,
+          v: number
+        ) => Promise<{
+          success: boolean;
+          file?: string;
+          line?: number;
+          column?: number;
+          error?: string;
+        }>;
+      };
       gitTerminal: {
         start: (options?: { cwd?: string }) => Promise<{ success: boolean; shell?: string; error?: string }>;
         stop: () => Promise<any>;

@@ -3,7 +3,35 @@
     "allow": [
       "Bash(node -e \"const pkg = require\\(''./node_modules/pdfjs-dist/package.json''\\); console.log\\(JSON.stringify\\({main: pkg.main, module: pkg.module, exports: typeof pkg.exports}, null, 2\\)\\)\")",
       "Bash(node -e \"const pkg = require\\(''./node_modules/pdfjs-dist/package.json''\\); console.log\\(pkg.types || pkg.typings\\)\")",
-      "Bash(npm run build)"
+      "Bash(npm run build)",
+      "Bash([ -s \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bfsoh5ymz.output\" ])",
+      "Bash(tail -f \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bfsoh5ymz.output\")",
+      "Bash(grep -E \"ERROR|error TS|compiled successfully|webpack [0-9].*compiled\" \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bfsoh5ymz.output\")",
+      "Bash(grep -c \"compiled successfully\" \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bfsoh5ymz.output\")",
+      "Bash(grep -c \"ERROR in\" \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bfsoh5ymz.output\")",
+      "Bash(tail -30 \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bfsoh5ymz.output\")",
+      "Bash(grep -n \"compiled\\\\|Cannot find\\\\|error TS\\\\|ERROR in\" \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bfsoh5ymz.output\")",
+      "Bash(npx tsc *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(tail -f \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bi2z2pv90.output\")",
+      "Bash(tail -15 \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bi2z2pv90.output\")",
+      "Bash(cat \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bi2z2pv90.output\")",
+      "Bash(tail -8 \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bi2z2pv90.output\")",
+      "Bash(grep -nE \"Cannot find|error TS|ERROR in|Module not found\" \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bi2z2pv90.output\")",
+      "Bash(grep -niE \"error|ERROR|Cannot find|Module not\" \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bi2z2pv90.output\")",
+      "Bash(tail -f \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bcr3ga1eb.output\")",
+      "Bash(tail -20 \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bcr3ga1eb.output\")",
+      "Bash(grep -nE \"^Error:|UNKNOWN|Cannot find|ENOENT|EPERM|EBUSY|EACCES|Module not found|Module build fail\" \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bcr3ga1eb.output\")",
+      "Bash(grep -inE \"error|ENOENT|EPERM|EBUSY|EACCES|UNKNOWN|Cannot find|Module not|build failed\" \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bcr3ga1eb.output\")",
+      "Bash(attrib node_modules/html-webpack-plugin/lib/child-compiler.js)",
+      "Bash(attrib src/renderer/index.html)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(tail -f \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\b4t8ezhvk.output\")",
+      "Bash(cat \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\b4t8ezhvk.output\")",
+      "Bash(grep -iE \"UNKNOWN|Cannot find|Module build fail|compiled with|compiled successfully|error TS|ENOENT|EPERM|EBUSY|\\\\.exe built|\\\\.exe$|electron-builder\" package-build.log)",
+      "Bash(cat \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bcsgqjztw.output\")",
+      "Bash(cat \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bf23p6hbf.output\")"
     ]
   }
 }

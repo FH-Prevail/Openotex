@@ -1441,3 +1441,136 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
   }
 });
 
+// --- SyncTeX: forward (source -> PDF) and inverse (PDF -> source) ---
+//
+// synctex view -i LINE:COLUMN:TEXFILE -o PDFFILE
+// synctex edit -o PAGE:H:V:PDFFILE
+//
+// Coordinates are in PDF points (72dpi), with h measured from the left of the
+// page and v measured from the top.
+
+type SynctexRect = { page: number; h: number; v: number; W: number; H: number };
+
+const parseSyncTexViewOutput = (output: string): SynctexRect[] => {
+  const rects: SynctexRect[] = [];
+  let current: Partial<SynctexRect> = {};
+
+  const commit = () => {
+    if (
+      typeof current.page === 'number' &&
+      typeof current.h === 'number' &&
+      typeof current.v === 'number' &&
+      typeof current.W === 'number' &&
+      typeof current.H === 'number' &&
+      Number.isFinite(current.page) &&
+      Number.isFinite(current.h) &&
+      Number.isFinite(current.v)
+    ) {
+      rects.push(current as SynctexRect);
+    }
+    current = {};
+  };
+
+  for (const raw of output.split(/\r?\n/)) {
+    const line = raw.trim();
+    const idx = line.indexOf(':');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx);
+    const value = line.slice(idx + 1);
+    switch (key) {
+      case 'Page':
+        if (current.page !== undefined) commit();
+        current.page = parseInt(value, 10);
+        break;
+      case 'h': current.h = parseFloat(value); break;
+      case 'v': current.v = parseFloat(value); break;
+      case 'W': current.W = parseFloat(value); break;
+      case 'H':
+        current.H = parseFloat(value);
+        commit();
+        break;
+    }
+  }
+  if (current.page !== undefined) commit();
+  return rects;
+};
+
+const parseSyncTexEditOutput = (output: string) => {
+  let input = '';
+  let line = NaN;
+  let column = NaN;
+  for (const raw of output.split(/\r?\n/)) {
+    const l = raw.trim();
+    const idx = l.indexOf(':');
+    if (idx <= 0) continue;
+    const key = l.slice(0, idx);
+    const value = l.slice(idx + 1);
+    if (!input && key === 'Input') input = value;
+    else if (Number.isNaN(line) && key === 'Line') line = parseInt(value, 10);
+    else if (Number.isNaN(column) && key === 'Column') column = parseInt(value, 10);
+    if (input && !Number.isNaN(line)) break;
+  }
+  return { input, line, column };
+};
+
+ipcMain.handle('synctex-forward', async (_event, payload: { texFile: string; line: number; column?: number }) => {
+  try {
+    const texFile = payload?.texFile;
+    if (!texFile || typeof texFile !== 'string') {
+      return { success: false, error: 'Missing texFile.' };
+    }
+    const line = Math.max(1, Math.floor(Number(payload?.line) || 1));
+    const column = Math.max(0, Math.floor(Number(payload?.column) || 0));
+    const dir = path.dirname(texFile);
+    const base = path.basename(texFile, path.extname(texFile));
+    const pdfFile = path.join(dir, `${base}.pdf`);
+    if (!(await pathExists(pdfFile))) {
+      return { success: false, error: 'No compiled PDF found. Compile the document first.' };
+    }
+    const inputArg = `${line}:${column}:${texFile}`;
+    const { stdout } = await execFileAsync('synctex', ['view', '-i', inputArg, '-o', pdfFile], { cwd: dir, timeout: 15000 } as any);
+    const rects = parseSyncTexViewOutput(stdout);
+    if (rects.length === 0) {
+      return { success: false, error: 'No matching location in PDF (is synctex enabled?).' };
+    }
+    return { success: true, rects, pdfFile };
+  } catch (error: any) {
+    const msg = (error && (error.stderr || error.message)) || 'synctex view failed.';
+    return { success: false, error: msg };
+  }
+});
+
+ipcMain.handle('synctex-inverse', async (_event, payload: { pdfFile: string; page: number; h: number; v: number }) => {
+  try {
+    const pdfFile = payload?.pdfFile;
+    if (!pdfFile || typeof pdfFile !== 'string') {
+      return { success: false, error: 'Missing pdfFile.' };
+    }
+    const page = Math.max(1, Math.floor(Number(payload?.page) || 1));
+    const h = Number(payload?.h);
+    const v = Number(payload?.v);
+    if (!Number.isFinite(h) || !Number.isFinite(v)) {
+      return { success: false, error: 'Invalid coordinates.' };
+    }
+    if (!(await pathExists(pdfFile))) {
+      return { success: false, error: 'PDF not found.' };
+    }
+    const dir = path.dirname(pdfFile);
+    const inputArg = `${page}:${h.toFixed(2)}:${v.toFixed(2)}:${pdfFile}`;
+    const { stdout } = await execFileAsync('synctex', ['edit', '-o', inputArg], { cwd: dir, timeout: 15000 } as any);
+    const parsed = parseSyncTexEditOutput(stdout);
+    if (!parsed.input || Number.isNaN(parsed.line)) {
+      return { success: false, error: 'No source mapping found for that location.' };
+    }
+    return {
+      success: true,
+      file: parsed.input,
+      line: parsed.line,
+      column: Number.isFinite(parsed.column) && parsed.column > 0 ? parsed.column : 1,
+    };
+  } catch (error: any) {
+    const msg = (error && (error.stderr || error.message)) || 'synctex edit failed.';
+    return { success: false, error: msg };
+  }
+});
+

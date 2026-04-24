@@ -4,7 +4,7 @@ import { dump as yamlDump, load as yamlLoad } from 'js-yaml';
 import Split from 'react-split';
 import FileExplorer from './components/FileExplorer';
 import Editor, { EditorHandle } from './components/Editor';
-import Preview from './components/Preview';
+import Preview, { PreviewHandle } from './components/Preview';
 import StructureMap from './components/StructureMap';
 import Toolbar from './components/Toolbar';
 import MenuBar from './components/MenuBar';
@@ -115,6 +115,8 @@ const AppContent: React.FC = () => {
     });
     const autoCompileTimeout = useRef<NodeJS.Timeout | null>(null);
     const editorRef = useRef<EditorHandle | null>(null);
+    const previewRef = useRef<PreviewHandle | null>(null);
+    const cursorPositionRef = useRef<{ lineNumber: number; column: number }>({ lineNumber: 1, column: 1 });
     const annotationsRef = useRef<Annotation[]>([]);
     const [highlightColor, setHighlightColor] = useState<string>(() => {
         try {
@@ -1153,6 +1155,7 @@ Your conclusions go here.
         }
     }, [annotations, currentFile, showNotification, updateAnnotations]);
     const handleCursorChange = useCallback((position: CursorPosition) => {
+        cursorPositionRef.current = position;
         if (!currentFile) {
             return;
         }
@@ -1162,6 +1165,31 @@ Your conclusions go here.
     const handleFocusAnnotation = useCallback((annotation: Annotation) => {
         editorRef.current?.revealRange(annotation.range);
     }, []);
+    const handleSyncTexJump = useCallback((target: { file: string; line: number; column: number }) => {
+        if (!target?.file || !target.line) {
+            return;
+        }
+        const normalize = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+        const sameFile = currentFile && normalize(currentFile.path) === normalize(target.file);
+        if (sameFile) {
+            editorRef.current?.setCursorPosition({ lineNumber: target.line, column: target.column || 1 });
+            return;
+        }
+        const pathApi = (window as any).api?.path;
+        const name = pathApi ? pathApi.basename(target.file) : target.file.split(/[\\/]/).pop() || target.file;
+        pendingCursorRef.current = {
+            path: target.file,
+            position: { lineNumber: target.line, column: target.column || 1 },
+        };
+        void handleFileSelect({ name, path: target.file, isDirectory: false } as FileNode);
+    }, [currentFile, pendingCursorRef]);
+    const handleForwardSearch = useCallback(() => {
+        if (!currentFile) return;
+        const ext = currentFile.name.split('.').pop()?.toLowerCase();
+        if (ext !== 'tex' && ext !== 'latex') return;
+        const { lineNumber, column } = cursorPositionRef.current;
+        void previewRef.current?.forwardSearch(lineNumber, column);
+    }, [currentFile]);
     const handleInstallPackage = async (packageName: string): Promise<void> => {
         const api = (window as any).api;
         try {
@@ -1297,7 +1325,7 @@ Your conclusions go here.
                     // Delay the check by 3 seconds to let the app fully load
                     setTimeout(async () => {
                         try {
-                            const CURRENT_VERSION = '1.0.4';
+                            const CURRENT_VERSION = '1.0.5';
                             const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
                             const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
 
@@ -1694,10 +1722,15 @@ Your conclusions go here.
                 event.preventDefault();
                 handleVersionFreeze();
             }
+            // Ctrl+Alt+J: SyncTeX forward search (source -> PDF)
+            if ((event.ctrlKey || event.metaKey) && event.altKey && event.code === 'KeyJ') {
+                event.preventDefault();
+                handleForwardSearch();
+            }
         };
         window.addEventListener('keydown', handleKeydown);
         return () => window.removeEventListener('keydown', handleKeydown);
-    }, [isCurrentFileLatex, handleCompile, handleToggleTerminal, handleSaveCurrentFile, handleSaveAllFiles, handleVersionFreeze]);
+    }, [isCurrentFileLatex, handleCompile, handleToggleTerminal, handleSaveCurrentFile, handleSaveAllFiles, handleVersionFreeze, handleForwardSearch]);
     // Auto-save effect
     useEffect(() => {
         if (!autoSave || !projectPath)
@@ -1872,12 +1905,14 @@ Your conclusions go here.
                     <div className="panel preview-panel">
                         <div className="preview-layer" hidden={showStructureMap} style={{ height: '100%' }}>
                             <Preview
+                                ref={previewRef}
                                 content={editorContent}
                                 compileNonce={compileNonce}
                                 currentFileExtension={currentFileExtension}
                                 currentFilePath={currentFile?.path ?? null}
                                 latexEngine={latexEngine}
                                 onMissingPackages={handleMissingPackages}
+                                onSyncTexJump={handleSyncTexJump}
                             />
                         </div>
                         <div className="structure-layer" hidden={!showStructureMap} style={{ height: '100%' }}>

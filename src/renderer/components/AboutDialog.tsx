@@ -7,7 +7,7 @@ interface AboutDialogProps {
   onClose: () => void;
 }
 
-const CURRENT_VERSION = '1.0.4';
+const CURRENT_VERSION = '1.0.5';
 const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
 const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
 
@@ -200,6 +200,20 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
               <li>Annotations and comments</li>
               <li>Auto-save and auto-compile</li>
               <li>MiKTeX/TinyTeX package management</li>
+              <li>SyncTeX forward &amp; inverse search between editor and PDF</li>
+            </ul>
+          </div>
+
+          <div className="about-section">
+            <h4>Keyboard Shortcuts</h4>
+            <ul className="shortcut-list">
+              <li><kbd>Ctrl</kbd>+<kbd>S</kbd> — Save current file</li>
+              <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> — Save all files</li>
+              <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> — Compile LaTeX</li>
+              <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> — Create version freeze</li>
+              <li><kbd>Ctrl</kbd>+<kbd>`</kbd> — Toggle terminal</li>
+              <li><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd> — SyncTeX forward search (editor → PDF)</li>
+              <li><kbd>Ctrl</kbd>+<kbd>Click</kbd> in PDF — SyncTeX inverse search (PDF → editor)</li>
             </ul>
           </div>
 

@@ -57,6 +57,14 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('filesystem-changed', handler);
   },
 
+  // SyncTeX forward/inverse search
+  synctex: {
+    forward: (texFile: string, line: number, column: number) =>
+      ipcRenderer.invoke('synctex-forward', { texFile, line, column }),
+    inverse: (pdfFile: string, page: number, h: number, v: number) =>
+      ipcRenderer.invoke('synctex-inverse', { pdfFile, page, h, v }),
+  },
+
   // Git Terminal (git-only)
   gitTerminal: {
     start: (options: { cwd?: string } = {}) => ipcRenderer.invoke('git-terminal-start', options),

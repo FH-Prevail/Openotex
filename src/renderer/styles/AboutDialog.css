@@ -278,3 +278,27 @@
 .check-startup-label span {
   transition: color 0.2s ease;
 }
+
+.shortcut-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.shortcut-list li {
+  padding: 4px 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.shortcut-list kbd {
+  display: inline-block;
+  font-family: Monaco, Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  margin: 0 2px;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border-muted);
+  border-radius: 3px;
+  color: var(--color-text-primary);
+  box-shadow: 0 1px 0 var(--color-border-strong);
+}

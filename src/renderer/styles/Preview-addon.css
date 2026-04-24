@@ -132,6 +132,42 @@
   color: var(--color-text-primary);
 }
 
+/* SyncTeX: per-page wrapper + forward-search highlight overlay */
+.pdf-page-wrapper {
+  position: relative;
+  display: block;
+  margin: 0 auto 8px;
+  line-height: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+.pdf-page-wrapper .pdf-page-canvas {
+  display: block;
+  margin: 0;
+  box-shadow: none;
+}
+
+.pdf-page-wrapper.synctex-enabled:hover {
+  cursor: crosshair;
+}
+
+.pdf-synctex-highlight {
+  position: absolute;
+  pointer-events: none;
+  background-color: rgba(255, 213, 79, 0.45);
+  border: 2px solid rgba(255, 179, 0, 0.9);
+  border-radius: 2px;
+  box-shadow: 0 0 8px 2px rgba(255, 179, 0, 0.35);
+  animation: pdf-synctex-pulse 1.8s ease-out;
+  opacity: 0;
+}
+
+@keyframes pdf-synctex-pulse {
+  0%   { opacity: 0.9; transform: scale(1.15); }
+  25%  { opacity: 0.9; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1); }
+}
+
 
 
 
