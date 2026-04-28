@@ -31,7 +31,8 @@
       "Bash(cat \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\b4t8ezhvk.output\")",
       "Bash(grep -iE \"UNKNOWN|Cannot find|Module build fail|compiled with|compiled successfully|error TS|ENOENT|EPERM|EBUSY|\\\\.exe built|\\\\.exe$|electron-builder\" package-build.log)",
       "Bash(cat \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bcsgqjztw.output\")",
-      "Bash(cat \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bf23p6hbf.output\")"
+      "Bash(cat \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bf23p6hbf.output\")",
+      "Bash(cat \"C:\\\\\\\\Users\\\\\\\\p42872\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\claude\\\\\\\\c--Users-p42872-OneDrive---FH-OOe-Dokumente-GitHub-Openotex-github-Openotex\\\\\\\\ec3f91ef-f97a-4ae2-899b-47ba472cc81c\\\\\\\\tasks\\\\\\\\bj2evcgjq.output\")"
     ]
   }
 }
