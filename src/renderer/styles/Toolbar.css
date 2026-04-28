@@ -24,6 +24,12 @@
   margin-right: 20px;
 }
 
+.app-edition {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
 .toolbar-btn {
   display: flex;
   align-items: center;
@@ -110,4 +116,3 @@
   border-color: var(--color-accent);
   box-shadow: 0 0 0 2px rgba(78, 201, 176, 0.2);
 }
-

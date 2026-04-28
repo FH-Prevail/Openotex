@@ -4,6 +4,7 @@ import { FiRefreshCw, FiZoomIn, FiZoomOut, FiDownload, FiAlertCircle, FiHelpCirc
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import NotificationDialog from './NotificationDialog';
+import type { LatexDiagnostic } from '../../shared/latexDiagnostics';
 import '../styles/Preview.css';
 import '../styles/Preview-addon.css';
 
@@ -41,6 +42,7 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
   const [compilationStatus, setCompilationStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [compilationLog, setCompilationLog] = useState<string>('');
+  const [diagnostics, setDiagnostics] = useState<LatexDiagnostic[]>([]);
   const [zoom, setZoom] = useState(100);
   const [latexInstalled, setLatexInstalled] = useState<boolean | null>(null);
   const [latexVersion, setLatexVersion] = useState<string>('');
@@ -62,8 +64,16 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
   );
   const isLatexFile = fileExtension === 'tex' || fileExtension === 'latex';
   const isMarkdownFile = fileExtension === 'md' || fileExtension === 'markdown';
+  const engineSuggestion = useMemo(() => {
+    if (!isLatexFile || latexEngine === 'pdflatex') return '';
+    if (/\\documentclass(?:\[[^\]]*\])?\{IEEEtran\}/i.test(content)) {
+      return 'IEEEtran templates are normally compiled with pdfLaTeX. Switch engines if you do not need Unicode or system fonts.';
+    }
+    return '';
+  }, [content, isLatexFile, latexEngine]);
 
   const latestCompileRequestRef = useRef(0);
+  const lastSuccessfulSourcePathRef = useRef<string | null>(null);
 
   // pdfjs state
   const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
@@ -228,6 +238,16 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
   // Note: `zoom` is intentionally omitted — zoom changes are handled by the
   // separate effect below so we don't reload the document on every zoom.
 
+  useEffect(() => {
+    if (isLatexFile && currentFilePath && lastSuccessfulSourcePathRef.current !== currentFilePath) {
+      setPdfData('');
+      setPdfPath('');
+      setError('');
+      setCompilationLog('');
+      setDiagnostics([]);
+    }
+  }, [currentFilePath, isLatexFile]);
+
   // Re-render at the new zoom level whenever the user zooms in/out.
   useEffect(() => {
     const doc = pdfDocRef.current;
@@ -271,17 +291,22 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
       if (result.success) {
         setPdfData(result.pdfData);
         setPdfPath(result.pdfPath || '');
-        setCompilationLog(result.log);
+        setCompilationLog([result.log, result.warnings].filter(Boolean).join('\n'));
+        setDiagnostics(result.diagnostics || []);
         setError('');
         setCompilationStatus('Compilation successful');
+        lastSuccessfulSourcePathRef.current = currentFilePath;
       } else {
         setError(result.error || 'Compilation failed');
-        setCompilationLog(result.log || '');
-        setPdfData('');
-        setPdfPath('');
+        const fullLog = [result.log, result.details].filter(Boolean).join('\n');
+        setCompilationLog(fullLog);
+        setDiagnostics(result.diagnostics || []);
+        if (lastSuccessfulSourcePathRef.current !== currentFilePath) {
+          setPdfData('');
+          setPdfPath('');
+        }
         setCompilationStatus('');
 
-        const fullLog = (result.log || '') + '\n' + (result.details || '');
         const missing = detectMissingPackages(fullLog);
         if (missing.length > 0 && onMissingPackages) {
           onMissingPackages(missing);
@@ -293,8 +318,11 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
       }
       setError(`Compilation Error: ${err.message}`);
       console.error('Error compiling LaTeX:', err);
-      setPdfData('');
-      setPdfPath('');
+      setDiagnostics([]);
+      if (lastSuccessfulSourcePathRef.current !== currentFilePath) {
+        setPdfData('');
+        setPdfPath('');
+      }
       setCompilationStatus('');
     } finally {
       if (latestCompileRequestRef.current === requestId) {
@@ -312,8 +340,10 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
       setCompilationStatus('');
       setError('');
       setCompilationLog('');
+      setDiagnostics([]);
       setPdfData('');
       setPdfPath('');
+      lastSuccessfulSourcePathRef.current = null;
     }
   }, [compileNonce, latexInstalled, isLatexFile, latexEngine, compileLatex]);
 
@@ -402,7 +432,7 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
       if (!currentFilePath) return;
       try {
         const api = (window as any).api;
-        const result = await api.synctex.forward(currentFilePath, line, column ?? 1);
+        const result = await api.synctex.forward(currentFilePath, line, column ?? 1, pdfPathRef.current || undefined);
         if (result?.success && result.rects && result.rects.length > 0) {
           flashSynctexRects(result.rects);
         } else if (result?.error) {
@@ -484,6 +514,17 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
 
   const handleInstallLatex = async () => {
     await (window as any).api.openLatexDownload();
+  };
+
+  const handleDiagnosticClick = (diagnostic: LatexDiagnostic) => {
+    if (!diagnostic.line) return;
+    const file = diagnostic.file || currentFilePath;
+    if (!file) return;
+    onSyncTexJumpRef.current?.({
+      file,
+      line: diagnostic.line,
+      column: diagnostic.column || 1,
+    });
   };
 
   if (isMarkdownFile) {
@@ -570,6 +611,12 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
           </button>
         </div>
       </div>
+      {engineSuggestion && (
+        <div className="preview-engine-warning">
+          <FiAlertCircle size={14} />
+          <span>{engineSuggestion}</span>
+        </div>
+      )}
       <div className="preview-body">
         {pdfData ? (
           <div ref={containerRef} className="pdf-canvas-container" />
@@ -583,6 +630,28 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
         <div className="preview-error">
           <h4>Compilation Error</h4>
           <pre>{error}</pre>
+          {diagnostics.length > 0 && (
+            <div className="preview-diagnostics">
+              {diagnostics.map((diagnostic, index) => {
+                const canJump = Boolean(diagnostic.line);
+                const location = diagnostic.line ? `${diagnostic.file ? diagnostic.file.split(/[\\/]/).pop() : 'Source'}:${diagnostic.line}` : '';
+                return (
+                  <button
+                    type="button"
+                    key={`${diagnostic.severity}-${diagnostic.line || index}-${diagnostic.message}`}
+                    className={`preview-diagnostic preview-diagnostic-${diagnostic.severity}`}
+                    onClick={() => handleDiagnosticClick(diagnostic)}
+                    disabled={!canJump}
+                    title={canJump ? 'Jump to source line' : undefined}
+                  >
+                    <span className="preview-diagnostic-severity">{diagnostic.severity}</span>
+                    {location && <span className="preview-diagnostic-location">{location}</span>}
+                    <span className="preview-diagnostic-message">{diagnostic.message}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <details>
             <summary>View Full Log</summary>
             <pre>{compilationLog}</pre>

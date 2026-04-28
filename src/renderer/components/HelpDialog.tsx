@@ -85,6 +85,14 @@ const HelpDialog: React.FC<HelpDialogProps> = ({ isOpen, onClose }) => {
                 <span>Toggle comment</span>
               </div>
               <div className="shortcut-item">
+                <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>J</kbd>
+                <span>Highlight the matching PDF location</span>
+              </div>
+              <div className="shortcut-item">
+                <kbd>Right-click</kbd>
+                <span>Choose Highlight in PDF from the editor context menu</span>
+              </div>
+              <div className="shortcut-item">
                 <kbd>F12</kbd>
                 <span>Open Developer Tools (debugging)</span>
               </div>

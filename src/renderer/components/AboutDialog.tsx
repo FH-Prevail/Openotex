@@ -1,5 +1,6 @@
 import React from 'react';
 import { FiX } from 'react-icons/fi';
+import { APP_VERSION, APP_VERSION_LABEL } from '../../shared/appInfo';
 import '../styles/AboutDialog.css';
 
 interface AboutDialogProps {
@@ -7,7 +8,7 @@ interface AboutDialogProps {
   onClose: () => void;
 }
 
-const CURRENT_VERSION = '1.0.6';
+const CURRENT_VERSION = APP_VERSION;
 const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
 const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
 
@@ -114,7 +115,7 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
 
       if (foundUpdate) {
         const userWantsUpdate = window.confirm(
-          `A new version (${latestVersion}) is available!\n\nYou are currently running version ${CURRENT_VERSION}.\n\nWould you like to visit the download page?`
+          `A new version (${latestVersion}) is available!\n\nYou are currently running version ${APP_VERSION_LABEL}.\n\nWould you like to visit the download page?`
         );
 
         if (userWantsUpdate) {
@@ -164,7 +165,7 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
             )}
           </div>
           <h3 className="about-title">Openotex</h3>
-          <p className="about-version">Version {CURRENT_VERSION}</p>
+          <p className="about-version">Version {APP_VERSION_LABEL}</p>
           <button
             className="check-update-button"
             onClick={checkForUpdates}
@@ -213,6 +214,7 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
               <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> — Create version freeze</li>
               <li><kbd>Ctrl</kbd>+<kbd>`</kbd> — Toggle terminal</li>
               <li><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd> — SyncTeX forward search (editor → PDF)</li>
+              <li>Right-click in the editor and choose <strong>Highlight in PDF</strong> — SyncTeX forward search</li>
               <li><kbd>Ctrl</kbd>+<kbd>Click</kbd> in PDF — SyncTeX inverse search (PDF → editor)</li>
             </ul>
           </div>

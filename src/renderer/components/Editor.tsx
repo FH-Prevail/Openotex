@@ -134,6 +134,7 @@ interface EditorProps {
   onRemoveAnnotation?: (id: string) => void;
   onEditAnnotation?: (annotation: Annotation) => void;
   onCursorChange?: (position: { lineNumber: number; column: number }) => void;
+  onSyncTexForwardSearch?: () => void;
   theme: 'dark' | 'light';
 }
 
@@ -145,6 +146,7 @@ export interface EditorHandle {
     text: string;
     range: AnnotationRange;
   } | null;
+  getCursorPosition: () => { lineNumber: number; column: number } | null;
   revealRange: (range: AnnotationRange) => void;
   setCursorPosition: (position: { lineNumber: number; column: number }) => void;
   jumpToLine: (lineNumber: number) => void;
@@ -161,6 +163,7 @@ const Editor = forwardRef<EditorHandle, EditorProps>(({
   onRemoveAnnotation,
   onEditAnnotation,
   onCursorChange,
+  onSyncTexForwardSearch,
   theme
 }, ref) => {
   const editorRef = useRef<any>(null);
@@ -168,10 +171,16 @@ const Editor = forwardRef<EditorHandle, EditorProps>(({
   const decorationIdsRef = useRef<string[]>([]);
   const colorClassMapRef = useRef<Map<string, string>>(new Map());
   const annotationsRef = useRef<Annotation[]>(annotations);
+  const lastContextMenuPositionRef = useRef<{ lineNumber: number; column: number } | null>(null);
+  const onSyncTexForwardSearchRef = useRef(onSyncTexForwardSearch);
   // Keep annotations ref up to date
   useEffect(() => {
     annotationsRef.current = annotations;
   }, [annotations]);
+
+  useEffect(() => {
+    onSyncTexForwardSearchRef.current = onSyncTexForwardSearch;
+  }, [onSyncTexForwardSearch]);
 
   // Register LaTeX snippets once
   useEffect(() => {
@@ -245,6 +254,33 @@ const Editor = forwardRef<EditorHandle, EditorProps>(({
     };
   }, [onCursorChange]);
 
+  const registerCursorListener = useCallback(() => {
+    if (!editorRef.current || !onCursorChange) {
+      return;
+    }
+
+    if (cursorListenerRef.current && typeof cursorListenerRef.current.dispose === 'function') {
+      cursorListenerRef.current.dispose();
+      cursorListenerRef.current = null;
+    }
+
+    const editorInstance = editorRef.current;
+    const initialPosition = editorInstance.getPosition();
+    if (initialPosition) {
+      onCursorChange({
+        lineNumber: initialPosition.lineNumber,
+        column: initialPosition.column,
+      });
+    }
+
+    cursorListenerRef.current = editorInstance.onDidChangeCursorPosition((event: any) => {
+      onCursorChange({
+        lineNumber: event.position.lineNumber,
+        column: event.position.column,
+      });
+    });
+  }, [onCursorChange]);
+
   const ensureHighlightClass = (color: string) => {
     if (colorClassMapRef.current.has(color)) {
       return colorClassMapRef.current.get(color)!;
@@ -279,6 +315,7 @@ const Editor = forwardRef<EditorHandle, EditorProps>(({
 
   const handleEditorDidMount = (editor: any, monaco: any) => {
     editorRef.current = editor;
+    registerCursorListener();
     // Add click handler for glyph margin to remove annotations
     editor.onMouseDown((e: any) => {
       if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
@@ -299,6 +336,15 @@ const Editor = forwardRef<EditorHandle, EditorProps>(({
       }
     });
 
+    editor.onContextMenu((event: any) => {
+      const position = event.target?.position || editor.getPosition();
+      if (!position) return;
+      lastContextMenuPositionRef.current = {
+        lineNumber: position.lineNumber,
+        column: position.column,
+      };
+    });
+
     // Register context menu actions
     if (onAnnotate) {
       editor.addAction({
@@ -308,6 +354,26 @@ const Editor = forwardRef<EditorHandle, EditorProps>(({
         contextMenuOrder: 1,
         run: () => {
           onAnnotate();
+        }
+      });
+    }
+
+    if (onSyncTexForwardSearch) {
+      editor.addAction({
+        id: 'synctex-forward-search',
+        label: 'Highlight in PDF',
+        contextMenuGroupId: 'navigation',
+        contextMenuOrder: 1,
+        run: () => {
+          const position = lastContextMenuPositionRef.current || editor.getPosition();
+          if (position) {
+            editor.setPosition(position);
+            onCursorChange?.({
+              lineNumber: position.lineNumber,
+              column: position.column,
+            });
+          }
+          onSyncTexForwardSearchRef.current?.();
         }
       });
     }
@@ -435,6 +501,14 @@ const Editor = forwardRef<EditorHandle, EditorProps>(({
           endLineNumber: selection.endLineNumber,
           endColumn: selection.endColumn,
         },
+      };
+    },
+    getCursorPosition: () => {
+      const position = editorRef.current?.getPosition();
+      if (!position) return null;
+      return {
+        lineNumber: position.lineNumber,
+        column: position.column,
       };
     },
     revealRange: (range: AnnotationRange) => {

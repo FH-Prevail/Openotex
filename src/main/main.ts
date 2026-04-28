@@ -3,6 +3,12 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { execFile, spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import chokidar, { FSWatcher } from 'chokidar';
+import { APP_EDITION } from '../shared/appInfo';
+import {
+  detectMissingLatexPackage,
+  parseLatexDiagnostics,
+  summarizeLatexError,
+} from '../shared/latexDiagnostics';
 // no util.promisify needed after switching to execFile/spawn helpers
 
 // execFile promise wrapper to avoid shell interpolation
@@ -27,10 +33,34 @@ const execFileAsync = (
   });
 };
 
+type ProcessCancelToken = {
+  cancelled: boolean;
+  processes: Set<ChildProcessWithoutNullStreams>;
+};
+
+const cancelProcessToken = (token: ProcessCancelToken) => {
+  token.cancelled = true;
+  for (const child of token.processes) {
+    try { child.kill(); } catch {}
+  }
+};
+
 // spawn collector with timeout
-const spawnCollect = (command: string, args: string[], options: any = {}, timeoutMs = 120000): Promise<{ stdout: string; stderr: string; code: number | null }> => {
+const spawnCollect = (
+  command: string,
+  args: string[],
+  options: any = {},
+  timeoutMs = 120000,
+  cancelToken?: ProcessCancelToken
+): Promise<{ stdout: string; stderr: string; code: number | null }> => {
   return new Promise((resolve, reject) => {
+    if (cancelToken?.cancelled) {
+      reject(new Error('Process cancelled'));
+      return;
+    }
+
     const child = spawn(command, args, { ...options, stdio: 'pipe' }) as ChildProcessWithoutNullStreams;
+    cancelToken?.processes.add(child);
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -46,6 +76,7 @@ const spawnCollect = (command: string, args: string[], options: any = {}, timeou
     child.stderr.on('data', (d) => { stderr += d.toString(); });
     child.on('error', (err) => {
       clearTimeout(timer);
+      cancelToken?.processes.delete(child);
       if (settled) return;
       settled = true;
       (err as any).stdout = stdout;
@@ -54,9 +85,14 @@ const spawnCollect = (command: string, args: string[], options: any = {}, timeou
     });
     child.on('exit', (code, signal) => {
       clearTimeout(timer);
+      cancelToken?.processes.delete(child);
       if (settled) return;
       settled = true;
-      if (timedOut) {
+      if (cancelToken?.cancelled) {
+        const error: any = new Error('Process cancelled');
+        error.stdout = stdout; error.stderr = stderr;
+        reject(error);
+      } else if (timedOut) {
         const error: any = new Error(`Process timed out after ${timeoutMs / 1000}s`);
         error.stdout = stdout; error.stderr = stderr;
         reject(error);
@@ -81,6 +117,7 @@ const gitCmd = process.platform === 'win32' ? 'git.exe' : 'git';
 // Git-only terminal sessions (stores running process and cwd per sender)
 const gitTerminalSessions = new Map<number, { cwd: string; proc: ChildProcessWithoutNullStreams | null }>();
 const fileWatchers = new Map<number, { watcher: FSWatcher; root: string }>();
+const latexCompileSessions = new Map<number, ProcessCancelToken>();
 
 const pathExists = async (targetPath: string): Promise<boolean> => {
   try {
@@ -303,7 +340,7 @@ function createWindow() {
     height: 900,
     minWidth: 1000,
     minHeight: 600,
-    title: 'Openotex',
+    title: `Openotex (${APP_EDITION})`,
     icon: iconPath,
     webPreferences: {
       preload: path.join(app.getAppPath(), 'dist', 'preload.js'),
@@ -1000,25 +1037,6 @@ const detectFontError = (output: string): { hasError: boolean; packageName?: str
   return { hasError: true };
 };
 
-// Helper function to detect missing package errors
-const detectMissingPackage = (output: string): string | null => {
-  const packagePatterns = [
-    /! LaTeX Error: File `([^']+\.sty)' not found/,
-    /! Package .* Error:.*package `([^']+)'/,
-    /LaTeX Error: File `([^']+\.sty)' not found/,
-    /Cannot find file `([^']+\.sty)'/
-  ];
-
-  for (const pattern of packagePatterns) {
-    const match = output.match(pattern);
-    if (match && match[1]) {
-      // Extract package name without .sty extension
-      return match[1].replace(/\.sty$/, '');
-    }
-  }
-  return null;
-};
-
 // Helper function to detect citation/bibliography errors
 const detectCitationError = (output: string): boolean => {
   const citationErrorPatterns = [
@@ -1052,6 +1070,15 @@ const needsRecompilation = (output: string): boolean => {
     /rerunfilecheck Warning/i,
   ];
   return recompilePatterns.some(pattern => pattern.test(output));
+};
+
+const isLatexmkAvailable = async (): Promise<boolean> => {
+  try {
+    await execFileAsync('latexmk', ['-v'], { timeout: 15000 });
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 // Helper function to install missing LaTeX fonts
@@ -1134,6 +1161,14 @@ const installLatexPackage = async (packageName: string): Promise<{ success: bool
 
 // Compile LaTeX file
 ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdflatex' | 'xelatex' | 'lualatex' = 'pdflatex') => {
+  const senderId = event.sender.id;
+  const previousCompile = latexCompileSessions.get(senderId);
+  if (previousCompile) {
+    cancelProcessToken(previousCompile);
+  }
+  const cancelToken: ProcessCancelToken = { cancelled: false, processes: new Set() };
+  latexCompileSessions.set(senderId, cancelToken);
+
   try {
     const dir = path.dirname(texFilePath);
     const filename = path.basename(texFilePath, '.tex');
@@ -1167,35 +1202,46 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
     // Allow up to 5 minutes per pass — large documents or first-time package
     // downloads can easily exceed the old 2-minute limit.
     const runLatexEngine = async () => {
-      return spawnCollect(engine, args, { cwd: dir }, 300000);
+      return spawnCollect(engine, args, { cwd: dir }, 300000, cancelToken);
     };
 
-    let currentAttempt: { stdout: string; stderr: string } | undefined;
-    let attemptCount = 0;
-    const maxAttempts = 8; // Raised from 5 — complex cross-ref/glossary docs may need more passes
-    let installedPackages = new Set<string>(); // Track installed packages to avoid loops
+    const installedPackages = new Set<string>(); // Track installed packages to avoid loops
     let attemptedFontFallback = false;
 
-    while (attemptCount < maxAttempts) {
-      attemptCount++;
-      console.log(`Compilation attempt ${attemptCount}/${maxAttempts}`);
+    const makeFailure = (output: string, details = '') => ({
+      success: false,
+      error: summarizeLatexError(output, texFilePath),
+      log: output,
+      details,
+      diagnostics: parseLatexDiagnostics(output, texFilePath)
+    });
 
+    const readCompiledPdf = async (log: string, warnings = '', targetPdfPath = pdfPath) => {
       try {
-        currentAttempt = await runLatexEngine();
-        const output = currentAttempt.stdout + currentAttempt.stderr;
+        await fs.access(targetPdfPath);
+        const pdfBuffer = await fs.readFile(targetPdfPath);
+        const pdfBase64 = pdfBuffer.toString('base64');
 
-        // Check if recompilation is needed for references/citations
-        if (needsRecompilation(output) && attemptCount < maxAttempts) {
-          console.log('Recompilation needed for references/citations');
-          continue; // Run again
-        }
+        return {
+          success: true,
+          pdfPath: targetPdfPath,
+          pdfData: pdfBase64,
+          log,
+          warnings,
+          diagnostics: parseLatexDiagnostics(`${log}\n${warnings}`, texFilePath)
+        };
+      } catch {
+        return {
+          success: false,
+          error: 'Compilation failed - PDF not generated',
+          log,
+          details: warnings,
+          diagnostics: parseLatexDiagnostics(`${log}\n${warnings}`, texFilePath)
+        };
+      }
+    };
 
-        // Compilation successful and no recompilation needed
-        break;
-
-      } catch (error: any) {
-        const errorOutput = (error.stdout || '') + (error.stderr || '');
-
+    const recoverFromLatexFailure = async (errorOutput: string, attemptCount: number) => {
         // Check for citation/bibliography errors - clean auxiliary files and retry
         if (detectCitationError(errorOutput) && attemptCount <= 2) {
           console.log('Citation error detected, cleaning auxiliary files...');
@@ -1216,7 +1262,7 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
               stage: 'retry',
               message: 'Auxiliary files cleaned. Retrying compilation...'
             });
-            continue; // Retry compilation
+            return { retry: true };
           } catch (cleanError) {
             console.error('Failed to clean auxiliary files:', cleanError);
           }
@@ -1242,7 +1288,7 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
                 stage: 'retry',
                 message: `Font package ${fontError.packageName} installed. Retrying compilation...`
               });
-              continue; // Retry compilation
+              return { retry: true };
             }
           }
 
@@ -1255,10 +1301,14 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
 
             if (distribution === 'unknown') {
               return {
-                success: false,
-                error: 'Font installation failed',
-                log: errorOutput,
-                details: 'Unknown LaTeX distribution. Install fonts manually.'
+                retry: false,
+                failure: {
+                  success: false,
+                  error: 'Font installation failed',
+                  log: errorOutput,
+                  details: 'Unknown LaTeX distribution. Install fonts manually.',
+                  diagnostics: parseLatexDiagnostics(errorOutput, texFilePath)
+                }
               };
             }
 
@@ -1270,20 +1320,24 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
                 stage: 'retry',
                 message: 'Fonts installed successfully. Retrying compilation...'
               });
-              continue; // Retry compilation
+              return { retry: true };
             } else {
               return {
-                success: false,
-                error: 'Font installation failed',
-                log: errorOutput,
-                details: installResult.message
+                retry: false,
+                failure: {
+                  success: false,
+                  error: 'Font installation failed',
+                  log: errorOutput,
+                  details: installResult.message,
+                  diagnostics: parseLatexDiagnostics(errorOutput, texFilePath)
+                }
               };
             }
           }
         }
 
         // Check for missing packages
-        const missingPackage = detectMissingPackage(errorOutput);
+        const missingPackage = detectMissingLatexPackage(errorOutput);
         if (missingPackage && !installedPackages.has(missingPackage)) {
           console.log(`Missing package detected: ${missingPackage}`);
 
@@ -1301,39 +1355,104 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
               stage: 'retry',
               message: `Package ${missingPackage} installed. Retrying compilation...`
             });
-            continue; // Retry compilation
+            return { retry: true };
           } else {
             return {
-              success: false,
-              error: `Failed to install package: ${missingPackage}`,
-              log: errorOutput,
-              details: installResult.message
+              retry: false,
+              failure: {
+                success: false,
+                error: `Failed to install package: ${missingPackage}`,
+                log: errorOutput,
+                details: installResult.message,
+                diagnostics: parseLatexDiagnostics(errorOutput, texFilePath)
+              }
             };
           }
         }
 
-        // If we've exhausted attempts or it's not a recoverable error, return the error
-        if (attemptCount >= maxAttempts) {
-          return {
-            success: false,
-            error: 'Compilation failed after multiple attempts',
-            log: errorOutput,
-            details: error.message || 'Maximum compilation attempts reached'
-          };
+        return { retry: false };
+    };
+
+    const compileWithLatexmk = async () => {
+      const latexmkOutputDir = path.join(dir, '.openotex', 'build', filename);
+      const latexmkPdfPath = path.join(latexmkOutputDir, `${filename}.pdf`);
+      await fs.mkdir(latexmkOutputDir, { recursive: true });
+
+      const latexmkMode = engine === 'xelatex' ? '-xelatex' : engine === 'lualatex' ? '-lualatex' : '-pdf';
+      const latexmkArgs = [
+        latexmkMode,
+        '-g',
+        '-interaction=nonstopmode',
+        '-halt-on-error',
+        '-file-line-error',
+        '-synctex=1',
+        `-outdir=${latexmkOutputDir}`,
+        texFilePath
+      ];
+
+      const maxLatexmkAttempts = 4;
+      for (let attempt = 1; attempt <= maxLatexmkAttempts; attempt++) {
+        console.log(`Compilation attempt ${attempt}/${maxLatexmkAttempts} using latexmk`);
+        event.sender.send('compilation-status', {
+          stage: 'compile',
+          message: attempt === 1 ? 'Compiling with latexmk...' : `Retrying with latexmk (${attempt}/${maxLatexmkAttempts})...`
+        });
+
+        try {
+          const result = await spawnCollect('latexmk', latexmkArgs, { cwd: dir }, 300000, cancelToken);
+          return await readCompiledPdf(result.stdout, result.stderr, latexmkPdfPath);
+        } catch (error: any) {
+          const errorOutput = (error.stdout || '') + (error.stderr || '');
+          const recovery = await recoverFromLatexFailure(errorOutput, attempt);
+          if ('failure' in recovery && recovery.failure) {
+            return recovery.failure;
+          }
+          if (recovery.retry && attempt < maxLatexmkAttempts) {
+            continue;
+          }
+          return makeFailure(errorOutput, error.message || 'latexmk failed');
+        }
+      }
+
+      return makeFailure('', 'latexmk failed after all attempts');
+    };
+
+    if (await isLatexmkAvailable()) {
+      return await compileWithLatexmk();
+    }
+
+    let currentAttempt: { stdout: string; stderr: string } | undefined;
+    let attemptCount = 0;
+    const maxAttempts = 5;
+
+    while (attemptCount < maxAttempts) {
+      attemptCount++;
+      console.log(`Compilation attempt ${attemptCount}/${maxAttempts}`);
+      event.sender.send('compilation-status', {
+        stage: 'compile',
+        message: attemptCount === 1 ? 'Compiling...' : `Retrying compilation (${attemptCount}/${maxAttempts})...`
+      });
+
+      try {
+        currentAttempt = await runLatexEngine();
+        break;
+      } catch (error: any) {
+        const errorOutput = (error.stdout || '') + (error.stderr || '');
+        const recovery = await recoverFromLatexFailure(errorOutput, attemptCount);
+
+        if ('failure' in recovery && recovery.failure) {
+          return recovery.failure;
+        }
+        if (recovery.retry && attemptCount < maxAttempts) {
+          continue;
         }
 
-        // Re-throw for unrecoverable errors
-        throw error;
+        return makeFailure(errorOutput, error.message || 'Compilation failed');
       }
     }
 
     if (!currentAttempt) {
-      return {
-        success: false,
-        error: 'Compilation failed - no successful attempt',
-        log: '',
-        details: 'Failed to compile after all attempts'
-      };
+      return makeFailure('', 'Failed to compile after all attempts');
     }
 
     const { stdout, stderr } = currentAttempt;
@@ -1364,7 +1483,7 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
       } else {
         // Classic BibTeX workflow
         const auxContent = await fs.readFile(auxPath, 'utf-8');
-        if (auxContent.includes('\\bibdata') || auxContent.includes('\\citation')) {
+        if (auxContent.includes('\\bibdata')) {
           console.log('Running BibTeX:', filename);
           event.sender.send('compilation-status', { stage: 'bibtex', message: 'Running BibTeX bibliography processor...' });
           const { stdout: bibOut, stderr: bibErr } = await execFileAsync('bibtex', [filename], { cwd: dir, timeout: 120000 } as any);
@@ -1393,51 +1512,41 @@ ipcMain.handle('compile-latex', async (event, texFilePath: string, engine: 'pdfl
     }
 
     // --- Final passes: recompile until stable or limit reached ---
-    if (ranPostProcessor) {
-      const maxFinalPasses = 3;
+    if (ranPostProcessor || needsRecompilation(combinedStdout + combinedStderr)) {
+      const maxFinalPasses = ranPostProcessor ? 3 : 5;
       for (let pass = 1; pass <= maxFinalPasses; pass++) {
         event.sender.send('compilation-status', {
           stage: 'retry',
           message: `Finalizing document (pass ${pass}/${maxFinalPasses})...`
         });
-        const finalPass = await runLatexEngine();
-        combinedStdout += `\n\n[Final pass ${pass}]\n${finalPass.stdout}`;
-        combinedStderr += `\n\n[Final pass ${pass}]\n${finalPass.stderr}`;
-        if (!needsRecompilation(finalPass.stdout + finalPass.stderr)) break;
+        try {
+          const finalPass = await runLatexEngine();
+          combinedStdout += `\n\n[Final pass ${pass}]\n${finalPass.stdout}`;
+          combinedStderr += `\n\n[Final pass ${pass}]\n${finalPass.stderr}`;
+          if (!needsRecompilation(finalPass.stdout + finalPass.stderr)) break;
+        } catch (error: any) {
+          const errorOutput = (error.stdout || '') + (error.stderr || '');
+          combinedStdout += `\n\n[Final pass ${pass} - failed]\n${error.stdout || ''}`;
+          combinedStderr += `\n\n[Final pass ${pass} - failed]\n${error.stderr || ''}`;
+          return makeFailure(errorOutput, error.message || 'Final LaTeX pass failed');
+        }
       }
     }
 
-    // Check if PDF was created
-    try {
-      await fs.access(pdfPath);
-
-      // Read the PDF file
-      const pdfBuffer = await fs.readFile(pdfPath);
-      const pdfBase64 = pdfBuffer.toString('base64');
-
-      return {
-        success: true,
-        pdfPath,
-        pdfData: pdfBase64,
-        log: combinedStdout,
-        warnings: combinedStderr
-      };
-    } catch (err) {
-      // PDF not created, compilation failed
-      return {
-        success: false,
-        error: 'Compilation failed - PDF not generated',
-        log: combinedStdout,
-        details: combinedStderr
-      };
-    }
+    return await readCompiledPdf(combinedStdout, combinedStderr);
   } catch (error: any) {
+    const output = `${error.stdout || ''}\n${error.stderr || ''}`;
     return {
       success: false,
-      error: error.message || 'Compilation error',
+      error: output.trim() ? summarizeLatexError(output, texFilePath) : (error.message || 'Compilation error'),
       log: error.stdout || '',
-      details: error.stderr || ''
+      details: error.stderr || '',
+      diagnostics: output.trim() ? parseLatexDiagnostics(output, texFilePath) : []
     };
+  } finally {
+    if (latexCompileSessions.get(senderId) === cancelToken) {
+      latexCompileSessions.delete(senderId);
+    }
   }
 });
 
@@ -1513,7 +1622,7 @@ const parseSyncTexEditOutput = (output: string) => {
   return { input, line, column };
 };
 
-ipcMain.handle('synctex-forward', async (_event, payload: { texFile: string; line: number; column?: number }) => {
+ipcMain.handle('synctex-forward', async (_event, payload: { texFile: string; line: number; column?: number; pdfFile?: string }) => {
   try {
     const texFile = payload?.texFile;
     if (!texFile || typeof texFile !== 'string') {
@@ -1523,12 +1632,14 @@ ipcMain.handle('synctex-forward', async (_event, payload: { texFile: string; lin
     const column = Math.max(0, Math.floor(Number(payload?.column) || 0));
     const dir = path.dirname(texFile);
     const base = path.basename(texFile, path.extname(texFile));
-    const pdfFile = path.join(dir, `${base}.pdf`);
+    const pdfFile = payload?.pdfFile && typeof payload.pdfFile === 'string'
+      ? payload.pdfFile
+      : path.join(dir, `${base}.pdf`);
     if (!(await pathExists(pdfFile))) {
       return { success: false, error: 'No compiled PDF found. Compile the document first.' };
     }
     const inputArg = `${line}:${column}:${texFile}`;
-    const { stdout } = await execFileAsync('synctex', ['view', '-i', inputArg, '-o', pdfFile], { cwd: dir, timeout: 15000 } as any);
+    const { stdout } = await execFileAsync('synctex', ['view', '-i', inputArg, '-o', pdfFile], { cwd: path.dirname(pdfFile), timeout: 15000 } as any);
     const rects = parseSyncTexViewOutput(stdout);
     if (rects.length === 0) {
       return { success: false, error: 'No matching location in PDF (is synctex enabled?).' };

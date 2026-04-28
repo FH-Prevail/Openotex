@@ -59,8 +59,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // SyncTeX forward/inverse search
   synctex: {
-    forward: (texFile: string, line: number, column: number) =>
-      ipcRenderer.invoke('synctex-forward', { texFile, line, column }),
+    forward: (texFile: string, line: number, column: number, pdfFile?: string) =>
+      ipcRenderer.invoke('synctex-forward', { texFile, line, column, pdfFile }),
     inverse: (pdfFile: string, page: number, h: number, v: number) =>
       ipcRenderer.invoke('synctex-inverse', { pdfFile, page, h, v }),
   },

@@ -11,6 +11,7 @@ import {
   FiMap,
 } from 'react-icons/fi';
 import HelpDialog from './HelpDialog';
+import { APP_EDITION } from '../../shared/appInfo';
 import '../styles/Toolbar.css';
 
 interface ToolbarProps {
@@ -57,7 +58,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
   return (
     <div className="toolbar">
       <div className="toolbar-left">
-        <div className="app-title">Openotex</div>
+        <div className="app-title">Openotex <span className="app-edition">({APP_EDITION})</span></div>
         <button className="toolbar-btn" onClick={onNewProject} title="New Project">
           <FiFilePlus size={18} />
           <span>New Project</span>

@@ -92,6 +92,7 @@ temp/
 
 # Session files
 .openotex-session.yml
+.openotex/build/
 
 # Metadata files
 *.metadata
@@ -99,6 +100,7 @@ temp/
 # Coverage
 coverage/
 .nyc_output/
+.test-dist/
 
 # Cache
 .cache/

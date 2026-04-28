@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-04-28
+
+### Added
+- Zlin Edition release label.
+- Right-click editor command to highlight the matching compiled PDF location with SyncTeX.
+- Structured LaTeX diagnostics and clickable source locations.
+- LaTeX diagnostic parser tests.
+
+### Changed
+- Improved LaTeX compilation through `latexmk` when available.
+- Isolated `latexmk` build artifacts under `.openotex/build/`.
+- Improved SyncTeX forward search accuracy by using the displayed PDF path and live Monaco cursor.
+
 ## [1.0.2] - 2025-02-XX
 
 ### Changed

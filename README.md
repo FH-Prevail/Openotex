@@ -6,6 +6,8 @@
 
 **A modern, open-source LaTeX editor for desktop**
 
+Version 1.5.0 (Zlin Edition)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Electron](https://img.shields.io/badge/Electron-28.0.0-blue.svg)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18.2.0-blue.svg)](https://reactjs.org/)
@@ -61,6 +63,8 @@ The easiest way to install Openotex is to download the installer from the offici
 ### Building from Source
 
 Want to run or build Openotex on your own computer? Follow these steps to build from source code.
+
+For the complete build, test, packaging, and LaTeX output notes, see [BUILDING.md](BUILDING.md).
 
 #### Prerequisites
 
@@ -132,6 +136,7 @@ This creates:
 - `npm run build` - Build for production
 - `npm run build:main` - Build only the main process
 - `npm run build:renderer` - Build only the renderer process
+- `npm test` - Run diagnostic parser tests
 - `npm run package` - Create distributable packages
 
 #### Troubleshooting
@@ -253,6 +258,7 @@ npm run package
 - `npm run build` - Build for production
 - `npm run build:main` - Build main process
 - `npm run build:renderer` - Build renderer process
+- `npm test` - Run diagnostic parser tests
 - `npm run package` - Create distributable packages
 
 ## Contributing

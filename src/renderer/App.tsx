@@ -20,6 +20,7 @@ import StatusBar from './components/StatusBar';
 import GitPanel from './components/GitPanel';
 import { Annotation, AnnotationRange } from '../types/annotations';
 import { CursorPosition, FileNode, PendingCursor, ProjectProvider, useProject } from './ProjectContext';
+import { APP_VERSION, APP_VERSION_LABEL } from '../shared/appInfo';
 import './styles/App.css';
 
 type ThemePreference = 'system' | 'dark' | 'light';
@@ -1187,7 +1188,8 @@ Your conclusions go here.
         if (!currentFile) return;
         const ext = currentFile.name.split('.').pop()?.toLowerCase();
         if (ext !== 'tex' && ext !== 'latex') return;
-        const { lineNumber, column } = cursorPositionRef.current;
+        const livePosition = editorRef.current?.getCursorPosition();
+        const { lineNumber, column } = livePosition || cursorPositionRef.current;
         void previewRef.current?.forwardSearch(lineNumber, column);
     }, [currentFile]);
     const handleInstallPackage = async (packageName: string): Promise<void> => {
@@ -1325,7 +1327,7 @@ Your conclusions go here.
                     // Delay the check by 3 seconds to let the app fully load
                     setTimeout(async () => {
                         try {
-                            const CURRENT_VERSION = '1.0.6';
+                            const CURRENT_VERSION = APP_VERSION;
                             const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
                             const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
 
@@ -1390,7 +1392,7 @@ Your conclusions go here.
 
                             if (foundUpdate) {
                                 const userWantsUpdate = window.confirm(
-                                    `A new version (${latestVersion}) of Openotex is available!\n\nYou are currently running version ${CURRENT_VERSION}.\n\nWould you like to visit the download page?\n\n(You can disable automatic update checks in Help > About)`
+                                    `A new version (${latestVersion}) of Openotex is available!\n\nYou are currently running version ${APP_VERSION_LABEL}.\n\nWould you like to visit the download page?\n\n(You can disable automatic update checks in Help > About)`
                                 );
 
                                 if (userWantsUpdate) {
@@ -1883,6 +1885,7 @@ Your conclusions go here.
                                 onRemoveAnnotation={handleRemoveAnnotation}
                                 onEditAnnotation={handleEditAnnotation}
                                 onCursorChange={handleCursorChange}
+                                onSyncTexForwardSearch={handleForwardSearch}
                                 theme={resolvedTheme}
                             />
                             {showAnnotationsPanel && (

@@ -28,7 +28,8 @@ declare global {
         forward: (
           texFile: string,
           line: number,
-          column: number
+          column: number,
+          pdfFile?: string
         ) => Promise<{
           success: boolean;
           rects?: Array<{ page: number; h: number; v: number; W: number; H: number }>;
@@ -64,4 +65,3 @@ declare global {
     };
   }
 }
-

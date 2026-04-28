@@ -80,6 +80,17 @@
   height: 100%;
 }
 
+.preview-engine-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background-color: var(--color-warning-bg, rgba(245, 158, 11, 0.12));
+  color: var(--color-warning-text, #f6c56f);
+  font-size: 12px;
+}
+
 /* pdfjs canvas rendering — fills the preview body and scrolls independently */
 .pdf-canvas-container {
   width: 100%;
@@ -128,6 +139,64 @@
   font-size: 12px;
   overflow-x: auto;
   margin: 0;
+}
+
+.preview-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.preview-diagnostic {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  background-color: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.preview-diagnostic:disabled {
+  cursor: default;
+}
+
+.preview-diagnostic:not(:disabled):hover {
+  border-color: var(--color-accent);
+  background-color: var(--color-hover-bg);
+}
+
+.preview-diagnostic-severity {
+  text-transform: uppercase;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.preview-diagnostic-error .preview-diagnostic-severity {
+  color: var(--color-danger-text);
+}
+
+.preview-diagnostic-warning .preview-diagnostic-severity {
+  color: var(--color-warning-text, #f6c56f);
+}
+
+.preview-diagnostic-location {
+  color: var(--color-text-secondary);
+  font-family: 'Monaco', 'Consolas', monospace;
+  font-size: 11px;
+}
+
+.preview-diagnostic-message {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
 }
 
 .markdown-preview {

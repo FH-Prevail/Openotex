@@ -1,6 +1,6 @@
 {
   "name": "openotex",
-  "version": "1.0.6",
+  "version": "1.5.0",
   "description": "A modern, open-source LaTeX editor for desktop",
   "main": "dist/main.js",
   "scripts": {
@@ -14,6 +14,8 @@
     "build:main": "cross-env NODE_ENV=production webpack --config webpack.main.config.js",
     "build:renderer": "cross-env NODE_ENV=production webpack --config webpack.renderer.config.js",
     "build:preload": "cross-env NODE_ENV=production webpack --config webpack.preload.config.js",
+    "test": "npm run test:diagnostics",
+    "test:diagnostics": "tsc -p tsconfig.test.json && node .test-dist/tests/latexDiagnostics.test.js",
     "package": "npm run build && electron-builder"
   },
   "keywords": [
