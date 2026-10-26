@@ -14,13 +14,16 @@ import AnnotationPanel from './components/AnnotationPanel';
 import TabBar from './components/TabBar';
 import PackageInstallDialog from './components/PackageInstallDialog';
 import AboutDialog from './components/AboutDialog';
+import McpDialog from './components/McpDialog';
 import AnnotationDialog from './components/AnnotationDialog';
 import NewProjectDialog from './components/NewProjectDialog';
 import StatusBar from './components/StatusBar';
 import GitPanel from './components/GitPanel';
 import { Annotation, AnnotationRange } from '../types/annotations';
-import { CursorPosition, FileNode, PendingCursor, ProjectProvider, useProject } from './ProjectContext';
+import { CursorPosition, FileNode, ProjectProvider, useProject } from './ProjectContext';
 import { APP_VERSION, APP_VERSION_LABEL } from '../shared/appInfo';
+import { escapeLatexText, PROJECT_TEMPLATES, DEFAULT_TEMPLATE_ID } from './utils/projectTemplates';
+import { fileNameOf, isSameOrInside, samePath } from './utils/paths';
 import './styles/App.css';
 
 type ThemePreference = 'system' | 'dark' | 'light';
@@ -53,6 +56,16 @@ interface Position {
 }
 
 const SESSION_FILENAME = '.openotex-session.yml';
+// Auto Save writes shortly after typing pauses instead of on every keystroke.
+const AUTO_SAVE_DELAY_MS = 700;
+const AUTO_COMPILE_DELAY_MS = 2500;
+// Folders that never belong in an exported project archive.
+const ZIP_EXCLUDED_DIRECTORIES = new Set(['.git', '.openotex', 'node_modules']);
+
+const isLatexFileName = (name: string) => {
+    const ext = name.split('.').pop()?.toLowerCase() ?? '';
+    return ext === 'tex' || ext === 'latex' || ext === 'ltx';
+};
 
 const AppContent: React.FC = () => {
     const {
@@ -127,6 +140,38 @@ const AppContent: React.FC = () => {
             return '#f8e71c';
         }
     });
+
+    // Unsaved-change tracking. `latestContentRef` always holds the newest
+    // text of every open file; `lastWrittenRef` what Openotex last wrote.
+    const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
+    const dirtyPathsRef = useRef<Set<string>>(new Set());
+    const latestContentRef = useRef<Map<string, string>>(new Map());
+    const lastWrittenRef = useRef<Map<string, string>>(new Map());
+    const autoSaveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+    // Mirrors of state for callbacks that outlive a render (IPC listeners,
+    // timers, Monaco actions).
+    const currentFileRef = useRef<FileNode | null>(currentFile);
+    currentFileRef.current = currentFile;
+    const openTabsRef = useRef<FileNode[]>(openTabs);
+    openTabsRef.current = openTabs;
+    const autoSaveRef = useRef(autoSave);
+    autoSaveRef.current = autoSave;
+    const flushOnNextCompileRef = useRef(false);
+    // Project whose saved session has been restored (or found absent).
+    const sessionReadyProjectRef = useRef<string | null>(null);
+    const [sessionReadyProject, setSessionReadyProject] = useState<string | null>(null);
+    const markSessionReady = useCallback((projectRoot: string | null) => {
+        sessionReadyProjectRef.current = projectRoot;
+        setSessionReadyProject(projectRoot);
+    }, []);
+    // A file to show once its project is open (from `Openotex --open=<file>`, e.g.
+    // the open_in_openotex MCP tool).
+    const [pendingOpen, setPendingOpen] = useState<{ file: string; line?: number } | null>(null);
+    const [showMcpDialog, setShowMcpDialog] = useState(false);
+    const autoCompileRef = useRef(autoCompile);
+    autoCompileRef.current = autoCompile;
+
     const triggerCompile = useCallback(() => {
         setCompileNonce(prev => prev + 1);
     }, []);
@@ -183,11 +228,10 @@ const AppContent: React.FC = () => {
         return parts.pop()?.toLowerCase() ?? null;
     }, [currentFile]);
     const isCurrentFileLatex = useMemo(() => {
-        return currentFileExtension === 'tex' || currentFileExtension === 'latex';
+        return currentFileExtension === 'tex' || currentFileExtension === 'latex' || currentFileExtension === 'ltx';
     }, [currentFileExtension]);
-    useEffect(() => {
-        annotationsRef.current = annotations;
-    }, [annotations]);
+    const openFilePaths = useMemo(() => openTabs.map(tab => tab.path), [openTabs]);
+    annotationsRef.current = annotations;
     useEffect(() => {
         if (typeof window === 'undefined' || !window.matchMedia) {
             return;
@@ -221,26 +265,6 @@ const AppContent: React.FC = () => {
             console.error('Error saving theme preference:', error);
         }
     }, [resolvedTheme, themePreference]);
-    const detectMissingPackages = (errorLog: string): string[] => {
-        const packages = new Set();
-        // Pattern: ! LaTeX Error: File `package.sty' not found.
-        const pattern1 = /File `([^']+)\.sty' not found/gi;
-        let match;
-        while ((match = pattern1.exec(errorLog)) !== null) {
-            packages.add(match[1]);
-        }
-        // Pattern: ! LaTeX Error: Missing \usepackage{package}
-        const pattern2 = /Missing \\usepackage\{([^}]+)\}/gi;
-        while ((match = pattern2.exec(errorLog)) !== null) {
-            packages.add(match[1]);
-        }
-        // Pattern: Package package not found
-        const pattern3 = /Package ([a-zA-Z0-9\-]+) not found/gi;
-        while ((match = pattern3.exec(errorLog)) !== null) {
-            packages.add(match[1]);
-        }
-        return Array.from(packages) as string[];
-    };
     const positionIsBeforeOrEqual = (a: Position, b: Position) => {
         if (a.line < b.line)
             return true;
@@ -300,6 +324,13 @@ const AppContent: React.FC = () => {
 
             const api = (window as any).api;
             const metadataPath = `${filePath}.metadata`;
+            if (annotationsToSave.length === 0) {
+                // Avoid creating empty metadata files next to every opened file.
+                const exists = await api.pathExists(metadataPath);
+                if (!exists?.exists) {
+                    return;
+                }
+            }
             const metadata = {
                 version: '1.0',
                 annotations: annotationsToSave.map(ann => ({
@@ -378,49 +409,163 @@ const AppContent: React.FC = () => {
             type,
         });
     }, [setNotification]);
-    const handleOpenProject = async () => {
-        const api = (window as any).api;
-        const result = await api.openDirectoryDialog();
-        if (result.success && !result.canceled && result.filePaths.length > 0) {
-            restoredSessionProjectRef.current = null;
-            cursorPositionsRef.current = new Map();
-            pendingCursorRef.current = null;
-            setProjectPath(result.filePaths[0]);
-            setCurrentFile(null);
-            setOpenTabs([]);
-            setTabContents(new Map());
-            setTabAnnotations(new Map());
-            setEditorContent('');
-            resetCompileNonce();
-            setAnnotations([]);
-            setShowAnnotationsPanel(false);
-            setAnnotationsHidden(true);
+    const showStatusMessage = useCallback((message: string, duration: number = 4000) => {
+        if (statusMessageTimeoutRef.current) {
+            clearTimeout(statusMessageTimeoutRef.current);
         }
-    };
+        setStatusMessage(message);
+        statusMessageTimeoutRef.current = setTimeout(() => {
+            setStatusMessage('');
+            statusMessageTimeoutRef.current = null;
+        }, duration);
+    }, []);
 
-    const handleNewProject = async () => {
-        // Save and close all open files
-        if (currentFile && openTabs.length > 0) {
-            // Save current file
-            const api = (window as any).api;
-            if (autoSave) {
-                await api.writeFile( currentFile.path, editorContent);
+    // --- Saving -------------------------------------------------------------
+
+    const markDirty = useCallback((filePath: string, dirty: boolean) => {
+        if (dirtyPathsRef.current.has(filePath) === dirty) {
+            return;
+        }
+        const next = new Set(dirtyPathsRef.current);
+        if (dirty) {
+            next.add(filePath);
+        }
+        else {
+            next.delete(filePath);
+        }
+        dirtyPathsRef.current = next;
+        setDirtyPaths(next);
+    }, []);
+
+    const cancelAutoSave = useCallback((filePath: string) => {
+        const timer = autoSaveTimersRef.current.get(filePath);
+        if (timer) {
+            clearTimeout(timer);
+            autoSaveTimersRef.current.delete(filePath);
+        }
+    }, []);
+
+    // Remember the on-disk content of a file that was just opened.
+    const trackOpenedFile = useCallback((filePath: string, content: string) => {
+        latestContentRef.current.set(filePath, content);
+        lastWrittenRef.current.set(filePath, content);
+    }, []);
+
+    const forgetFile = useCallback((filePath: string) => {
+        cancelAutoSave(filePath);
+        latestContentRef.current.delete(filePath);
+        lastWrittenRef.current.delete(filePath);
+        markDirty(filePath, false);
+    }, [cancelAutoSave, markDirty]);
+
+    const forgetAllFiles = useCallback(() => {
+        autoSaveTimersRef.current.forEach(timer => clearTimeout(timer));
+        autoSaveTimersRef.current.clear();
+        latestContentRef.current.clear();
+        lastWrittenRef.current.clear();
+        dirtyPathsRef.current = new Set();
+        setDirtyPaths(new Set());
+    }, []);
+
+    const writeFileContent = useCallback(async (filePath: string, content: string): Promise<boolean> => {
+        try {
+            const result = await (window as any).api.writeFile(filePath, content);
+            if (!result?.success) {
+                console.error('Failed to save', filePath, result?.error);
+                return false;
             }
-
-            // Save all tab contents
-            for (const [filePath, content] of tabContents.entries()) {
-                await api.writeFile( filePath, content);
+            lastWrittenRef.current.set(filePath, content);
+            if (latestContentRef.current.get(filePath) === content) {
+                markDirty(filePath, false);
             }
+            return true;
+        }
+        catch (error) {
+            console.error('Failed to save', filePath, error);
+            return false;
+        }
+    }, [markDirty]);
 
-            // Save annotations
-            if (currentFile) {
-                await saveAnnotationsToFile(currentFile.path, annotations);
+    // Write a file's latest content to disk now. Unless `force` is set, files
+    // without unsaved changes are skipped.
+    const flushFile = useCallback(async (filePath: string, force = false): Promise<boolean> => {
+        cancelAutoSave(filePath);
+        const content = latestContentRef.current.get(filePath);
+        if (content === undefined) {
+            return true;
+        }
+        if (!force && !dirtyPathsRef.current.has(filePath)) {
+            return true;
+        }
+        return writeFileContent(filePath, content);
+    }, [cancelAutoSave, writeFileContent]);
+
+    // Returns the paths that could not be saved.
+    const flushDirtyFiles = useCallback(async (filter?: (filePath: string) => boolean): Promise<string[]> => {
+        const failed: string[] = [];
+        for (const filePath of Array.from(dirtyPathsRef.current)) {
+            if (filter && !filter(filePath)) {
+                continue;
+            }
+            if (!(await flushFile(filePath))) {
+                failed.push(filePath);
             }
         }
+        return failed;
+    }, [flushFile]);
 
-        // Close all tabs
-        setOpenTabs([]);
+    const scheduleAutoSave = useCallback((filePath: string) => {
+        cancelAutoSave(filePath);
+        autoSaveTimersRef.current.set(filePath, setTimeout(() => {
+            autoSaveTimersRef.current.delete(filePath);
+            void flushFile(filePath).then(ok => {
+                if (!ok) {
+                    showStatusMessage(`Auto Save failed for ${fileNameOf(filePath)}`, 6000);
+                }
+            });
+        }, AUTO_SAVE_DELAY_MS));
+    }, [cancelAutoSave, flushFile, showStatusMessage]);
+
+    // Make sure unsaved changes are saved or explicitly discarded before tabs
+    // close or the project changes. Resolves to false when the user cancels.
+    const resolveUnsavedChanges = useCallback(async (paths?: string[]): Promise<boolean> => {
+        const targets = (paths ?? Array.from(dirtyPathsRef.current)).filter(filePath => dirtyPathsRef.current.has(filePath));
+        if (targets.length === 0) {
+            return true;
+        }
+        const inTargets = (filePath: string) => targets.includes(filePath);
+        if (autoSaveRef.current) {
+            const failed = await flushDirtyFiles(inTargets);
+            if (failed.length === 0) {
+                return true;
+            }
+        }
+        const choice = await (window as any).api.showUnsavedDialog(targets.map(fileNameOf));
+        if (choice === 'cancel') {
+            return false;
+        }
+        if (choice === 'discard') {
+            targets.forEach(filePath => {
+                cancelAutoSave(filePath);
+                markDirty(filePath, false);
+            });
+            return true;
+        }
+        const failed = await flushDirtyFiles(inTargets);
+        if (failed.length > 0) {
+            showNotification('Save Failed', `Could not save ${failed.map(fileNameOf).join(', ')}.`, 'error');
+            return false;
+        }
+        return true;
+    }, [cancelAutoSave, flushDirtyFiles, markDirty, showNotification]);
+
+    const resetWorkspace = useCallback(() => {
+        forgetAllFiles();
+        restoredSessionProjectRef.current = null;
+        cursorPositionsRef.current = new Map();
+        pendingCursorRef.current = null;
         setCurrentFile(null);
+        setOpenTabs([]);
         setTabContents(new Map());
         setTabAnnotations(new Map());
         setEditorContent('');
@@ -428,86 +573,92 @@ const AppContent: React.FC = () => {
         setAnnotations([]);
         setShowAnnotationsPanel(false);
         setAnnotationsHidden(true);
+    }, [forgetAllFiles, resetCompileNonce]);
 
-        // Show new project dialog
+    const handleOpenProject = async () => {
+        const api = (window as any).api;
+        const result = await api.openDirectoryDialog();
+        if (result.success && !result.canceled && result.filePaths.length > 0) {
+            if (!(await resolveUnsavedChanges())) {
+                return;
+            }
+            if (currentFile) {
+                await saveAnnotationsToFile(currentFile.path, annotationsRef.current);
+            }
+            resetWorkspace();
+            setProjectPath(result.filePaths[0]);
+        }
+    };
+
+    const handleNewProject = () => {
         setShowNewProjectDialog(true);
     };
 
-    const handleCreateNewProject = async (projectName: string, directory: string) => {
+    const handleCreateNewProject = async (projectName: string, directory: string, templateId: string = DEFAULT_TEMPLATE_ID) => {
         try {
             const api = (window as any).api;
             const pathModule = (window as any).api.path;
+            const template = PROJECT_TEMPLATES.find(item => item.id === templateId) ?? PROJECT_TEMPLATES[0];
 
-            // Create project directory
-            const projectPath = pathModule.join(directory, projectName);
-            const createDirResult = await api.createDirectory( projectPath);
+            const newProjectPath = pathModule.join(directory, projectName);
+            // Never write template files into an existing, non-empty folder.
+            const existing = await api.readDirectory(newProjectPath);
+            if (existing?.success && Array.isArray(existing.files) && existing.files.length > 0) {
+                showNotification('Folder Not Empty', `"${newProjectPath}" already exists and contains files. Choose another project name or location.`, 'error');
+                return;
+            }
 
+            if (!(await resolveUnsavedChanges())) {
+                return;
+            }
+
+            const createDirResult = await api.createDirectory(newProjectPath);
             if (!createDirResult.success) {
                 showNotification('Error', `Failed to create project directory: ${createDirResult.error}`, 'error');
                 return;
             }
 
-            // Create main.tex with basic template
-            const mainTexPath = pathModule.join(projectPath, 'main.tex');
-            const latexTemplate = `\\documentclass[12pt,a4paper]{article}
-
-% Essential packages
-\\usepackage[utf8]{inputenc}
-\\usepackage[T1]{fontenc}
-\\usepackage{lmodern}
-\\usepackage{amsmath}
-\\usepackage{graphicx}
-\\usepackage{hyperref}
-
-% Document metadata
-\\title{${projectName}}
-\\author{Your Name}
-\\date{\\today}
-
-\\begin{document}
-
-\\maketitle
-
-\\section{Introduction}
-
-Write your content here.
-
-\\section{Conclusion}
-
-Your conclusions go here.
-
-\\end{document}
-`;
-
-            const writeResult = await api.writeFile( mainTexPath, latexTemplate);
-
-            if (!writeResult.success) {
-                showNotification('Error', `Failed to create main.tex: ${writeResult.error}`, 'error');
-                return;
+            const files = template.files(escapeLatexText(projectName));
+            for (const [relativePath, fileContent] of Object.entries(files)) {
+                const filePath = pathModule.join(newProjectPath, ...relativePath.split('/'));
+                const parent = pathModule.dirname(filePath);
+                if (parent !== newProjectPath) {
+                    await api.createDirectory(parent);
+                }
+                const writeResult = await api.writeFile(filePath, fileContent);
+                if (!writeResult.success) {
+                    showNotification('Error', `Failed to create ${relativePath}: ${writeResult.error}`, 'error');
+                    return;
+                }
             }
 
-            // Set the project path and open main.tex
-            restoredSessionProjectRef.current = null;
-            cursorPositionsRef.current = new Map();
-            pendingCursorRef.current = null;
-            setProjectPath(projectPath);
+            if (currentFile) {
+                await saveAnnotationsToFile(currentFile.path, annotationsRef.current);
+            }
+            resetWorkspace();
+            setProjectPath(newProjectPath);
+            // The new project has no session file yet; skip restoring one.
+            restoredSessionProjectRef.current = newProjectPath;
+            markSessionReady(newProjectPath);
 
-            // Open main.tex file
+            const mainTexPath = pathModule.join(newProjectPath, 'main.tex');
+            const mainTexContent = files['main.tex'] ?? '';
             const mainTexFile: FileNode = {
                 name: 'main.tex',
                 path: mainTexPath,
                 isDirectory: false,
             };
 
+            trackOpenedFile(mainTexPath, mainTexContent);
             setOpenTabs([mainTexFile]);
             setCurrentFile(mainTexFile);
-            setEditorContent(latexTemplate);
+            setEditorContent(mainTexContent);
             triggerCompile();
-            setTabContents(new Map([[mainTexPath, latexTemplate]]));
+            setTabContents(new Map([[mainTexPath, mainTexContent]]));
             setAnnotations([]);
 
             setShowNewProjectDialog(false);
-            showNotification('Project Created', `Successfully created project "${projectName}"`, 'success');
+            showStatusMessage(`Created project "${projectName}" from the ${template.name} template`);
         } catch (error) {
             console.error('Error creating new project:', error);
             showNotification('Error', `Failed to create project: ${error}`, 'error');
@@ -527,10 +678,16 @@ Your conclusions go here.
                 }
                 for (const file of result.files) {
                     if (file.isDirectory) {
+                        if (ZIP_EXCLUDED_DIRECTORIES.has(file.name)) {
+                            continue;
+                        }
                         const childFolder = destination.folder(file.name) ?? destination;
                         await addFilesToZip(file.path, childFolder);
                     }
                     else {
+                        if (file.name === SESSION_FILENAME) {
+                            continue;
+                        }
                         const fileResult = await api.readFileBase64( file.path);
                         if (fileResult.success && fileResult.data) {
                             destination.file(file.name, fileResult.data, { base64: true });
@@ -538,6 +695,7 @@ Your conclusions go here.
                     }
                 }
             };
+            await flushDirtyFiles();
             await addFilesToZip(folderPath, rootFolder);
             const zipContent = await zip.generateAsync({ type: 'base64' });
             const defaultPath = path.join(path.dirname(folderPath), `${folderName}.zip`);
@@ -546,7 +704,7 @@ Your conclusions go here.
                 data: zipContent,
             });
             if (saveResult.success) {
-                showNotification('Folder Archived', `Saved ${folderName}.zip`, 'success');
+                showStatusMessage(`Saved ${fileNameOf(saveResult.filePath || `${folderName}.zip`)}`);
             }
             else if (!saveResult.canceled) {
                 throw new Error(saveResult.error || 'Unknown error while saving ZIP');
@@ -556,7 +714,7 @@ Your conclusions go here.
             console.error('ZIP export error:', error);
             showNotification('Export Failed', 'Failed to export folder as ZIP. Please try again.', 'error');
         }
-    }, [showNotification]);
+    }, [flushDirtyFiles, showNotification, showStatusMessage]);
     const handleFind = () => {
         editorRef.current?.focus();
         editorRef.current?.triggerFind();
@@ -573,8 +731,13 @@ Your conclusions go here.
         setAutoCompile(prev => !prev);
     }, []);
     const toggleAutoSave = useCallback(() => {
-        setAutoSave(prev => !prev);
-    }, []);
+        const next = !autoSaveRef.current;
+        setAutoSave(next);
+        if (next) {
+            // Turning Auto Save on saves everything that is pending.
+            void flushDirtyFiles();
+        }
+    }, [flushDirtyFiles]);
     const handleToggleAnnotationsVisibility = useCallback(() => {
         setAnnotationsHidden(prev => !prev);
     }, []);
@@ -598,7 +761,9 @@ Your conclusions go here.
         }
     }, []);
     const persistSession = useCallback(async () => {
-        if (!projectPath) {
+        // Never write (or delete) the session file before the previous
+        // session of this project has been read back.
+        if (!projectPath || sessionReadyProjectRef.current !== projectPath) {
             return;
         }
         try {
@@ -606,7 +771,10 @@ Your conclusions go here.
             const api = (window as any).api;
             const sessionPath = pathModule.join(projectPath, SESSION_FILENAME);
             if (openTabs.length === 0) {
-                await api.deletePath( sessionPath);
+                const exists = await api.pathExists(sessionPath);
+                if (exists?.exists) {
+                    await api.deletePath( sessionPath);
+                }
                 cursorPositionsRef.current = new Map();
                 return;
             }
@@ -635,9 +803,20 @@ Your conclusions go here.
             return;
         }
         if (openTabs.length > 0 || currentFile) {
+            markSessionReady(projectRoot);
             return;
         }
         restoredSessionProjectRef.current = projectRoot;
+        markSessionReady(null);
+        try {
+            await readSessionIntoWorkspace(projectRoot);
+        }
+        finally {
+            markSessionReady(projectRoot);
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [currentFile, openTabs]);
+    const readSessionIntoWorkspace = async (projectRoot: string) => {
         const pathModule = (window as any).api.path;
         const api = (window as any).api;
         const sessionPath = pathModule.join(projectRoot, SESSION_FILENAME);
@@ -671,10 +850,10 @@ Your conclusions go here.
             cursorPositionsRef.current = new Map();
             return;
         }
-        const restoredTabs = [];
-        const restoredContents = new Map();
-        const restoredAnnotations = new Map();
-        const missingPaths = [];
+        const restoredTabs: FileNode[] = [];
+        const restoredContents = new Map<string, string>();
+        const restoredAnnotations = new Map<string, Annotation[]>();
+        const missingPaths: string[] = [];
         for (const filePath of tabPaths) {
             try {
                 const result = await api.readFile( filePath);
@@ -722,6 +901,7 @@ Your conclusions go here.
             });
         }
         cursorPositionsRef.current = restoredCursorMap;
+        restoredContents.forEach((content, filePath) => trackOpenedFile(filePath, content));
         setOpenTabs(restoredTabs);
         setTabContents(restoredContents);
         setTabAnnotations(restoredAnnotations);
@@ -736,9 +916,7 @@ Your conclusions go here.
         };
         setCurrentFile(activeFile);
         setEditorContent(activeContent);
-        const activeExt = pathModule.extname(activeFile.path).toLowerCase();
-        const activeIsLatex = activeExt === '.tex' || activeExt === '.latex';
-        if (activeIsLatex) {
+        if (isLatexFileName(activeFile.name)) {
             triggerCompile();
         }
         else {
@@ -751,7 +929,7 @@ Your conclusions go here.
                 : `Skipped ${missingPaths.length} missing files from the previous session.`;
             showNotification('Files Missing', message, 'info');
         }
-    }, [currentFile, loadAnnotationsFromFile, openTabs, showNotification]);
+    };
     const schedulePersistSession = useCallback(() => {
         if (persistSessionTimeoutRef.current) {
             return;
@@ -765,140 +943,37 @@ Your conclusions go here.
     useEffect(() => {
         void persistSession();
     }, [persistSession]);
-    const handleFileSelect = async (file: FileNode) => {
-        if (file.isDirectory) {
+
+    // Show `file` in the editor, using its in-memory content.
+    const activateOpenTab = useCallback(async (file: FileNode | null) => {
+        if (!file) {
+            setCurrentFile(null);
+            setEditorContent('');
+            resetCompileNonce();
+            setAnnotations([]);
+            setShowAnnotationsPanel(false);
+            setAnnotationsHidden(true);
+            pendingCursorRef.current = null;
             return;
-        }
-        const fileExt = file.name.split('.').pop()?.toLowerCase() ?? '';
-        const fileIsLatex = fileExt === 'tex' || fileExt === 'latex';
-        // Save current tab content and annotations before switching
-        if (currentFile) {
-            setTabContents(prev => {
-                const newMap = new Map(prev);
-                newMap.set(currentFile.path, editorContent);
-                return newMap;
-            });
-            setTabAnnotations(prev => {
-                const newMap = new Map(prev);
-                newMap.set(currentFile.path, annotations);
-                return newMap;
-            });
-            // Save current annotations to metadata file
-            await saveAnnotationsToFile(currentFile.path, annotations);
-        }
-        // Check if file is already open in a tab
-        const existingTab = openTabs.find(tab => tab.path === file.path);
-        const storedPosition = cursorPositionsRef.current.get(file.path);
-        pendingCursorRef.current = {
-            path: file.path,
-            position: storedPosition ?? { lineNumber: 1, column: 1 },
-        };
-        if (existingTab) {
-            // Switch to existing tab
-            setCurrentFile(file);
-            const savedContent = tabContents.get(file.path);
-            const savedAnnotations = tabAnnotations.get(file.path);
-            if (savedContent !== undefined) {
-                setEditorContent(savedContent);
-                if (fileIsLatex) {
-                    triggerCompile();
-                }
-                else {
-                    resetCompileNonce();
-                }
-            }
-            if (savedAnnotations) {
-                setAnnotations(savedAnnotations);
-            }
-            else {
-                // Load from metadata file if not in memory
-                const loadedAnnotations = await loadAnnotationsFromFile(file.path);
-                setAnnotations(loadedAnnotations);
-                setTabAnnotations(prev => {
-                    const newMap = new Map(prev);
-                    newMap.set(file.path, loadedAnnotations);
-                    return newMap;
-                });
-            }
-            focusEditor();
-            return;
-        }
-        else {
-            // Open new tab
-            const api = (window as any).api;
-            const result = await api.readFile( file.path);
-            if (result.success) {
-                // Load annotations from metadata file
-                const loadedAnnotations = await loadAnnotationsFromFile(file.path);
-                setOpenTabs(prev => [...prev, file]);
-                setCurrentFile(file);
-                setEditorContent(result.content);
-                if (fileIsLatex) {
-                    triggerCompile();
-                }
-                else {
-                    resetCompileNonce();
-                }
-                setTabContents(prev => {
-                    const newMap = new Map(prev);
-                    newMap.set(file.path, result.content);
-                    return newMap;
-                });
-                setAnnotations(loadedAnnotations);
-                setTabAnnotations(prev => {
-                    const newMap = new Map(prev);
-                    newMap.set(file.path, loadedAnnotations);
-                    return newMap;
-                });
-                focusEditor();
-            }
-            else {
-                pendingCursorRef.current = null;
-            }
-        }
-    };
-    const handleTabClick = async (file: FileNode) => {
-        if (currentFile?.path === file.path) {
-            return;
-        }
-        const fileExt = file.name.split('.').pop()?.toLowerCase() ?? '';
-        const fileIsLatex = fileExt === 'tex' || fileExt === 'latex';
-        // Save current tab content and annotations
-        if (currentFile) {
-            setTabContents(prev => {
-                const newMap = new Map(prev);
-                newMap.set(currentFile.path, editorContent);
-                return newMap;
-            });
-            setTabAnnotations(prev => {
-                const newMap = new Map(prev);
-                newMap.set(currentFile.path, annotations);
-                return newMap;
-            });
-            // Save to metadata file
-            await saveAnnotationsToFile(currentFile.path, annotations);
         }
         const storedPosition = cursorPositionsRef.current.get(file.path);
         pendingCursorRef.current = {
             path: file.path,
             position: storedPosition ?? { lineNumber: 1, column: 1 },
         };
-        // Switch to clicked tab
         setCurrentFile(file);
-        const savedContent = tabContents.get(file.path) || '';
-        const savedAnnotations = tabAnnotations.get(file.path);
-        setEditorContent(savedContent);
-        if (fileIsLatex) {
+        setEditorContent(latestContentRef.current.get(file.path) ?? tabContents.get(file.path) ?? '');
+        if (isLatexFileName(file.name)) {
             triggerCompile();
         }
         else {
             resetCompileNonce();
         }
+        const savedAnnotations = tabAnnotations.get(file.path);
         if (savedAnnotations) {
             setAnnotations(savedAnnotations);
         }
         else {
-            // Load from metadata file if not in memory
             const loadedAnnotations = await loadAnnotationsFromFile(file.path);
             setAnnotations(loadedAnnotations);
             setTabAnnotations(prev => {
@@ -908,12 +983,104 @@ Your conclusions go here.
             });
         }
         focusEditor();
+    }, [focusEditor, loadAnnotationsFromFile, resetCompileNonce, tabAnnotations, tabContents, triggerCompile]);
+
+    // Leaving a tab: persist its highlights and, with Auto Save, its text.
+    const leaveCurrentTab = useCallback(async () => {
+        const leaving = currentFileRef.current;
+        if (!leaving) {
+            return;
+        }
+        if (autoSaveRef.current) {
+            void flushFile(leaving.path);
+        }
+        await saveAnnotationsToFile(leaving.path, annotationsRef.current);
+    }, [flushFile, saveAnnotationsToFile]);
+
+    const handleFileSelect = async (file: FileNode) => {
+        if (file.isDirectory) {
+            return;
+        }
+        if (currentFile && samePath(currentFile.path, file.path)) {
+            focusEditor();
+            return;
+        }
+        // Check if file is already open in a tab
+        const existingTab = openTabs.find(tab => samePath(tab.path, file.path));
+        if (existingTab) {
+            await leaveCurrentTab();
+            await activateOpenTab(existingTab);
+            return;
+        }
+        // Open new tab
+        const api = (window as any).api;
+        const result = await api.readFile( file.path);
+        if (!result.success) {
+            pendingCursorRef.current = null;
+            if (result.binary) {
+                // PDFs, images, archives: hand them to the system viewer.
+                const opened = await api.openPath(file.path);
+                if (opened?.success) {
+                    showStatusMessage(`Opened ${file.name} with the system viewer`);
+                }
+                else {
+                    showNotification('Cannot Open File', `${file.name} is not a text file and could not be opened.`, 'info');
+                }
+            }
+            else {
+                showNotification('Cannot Open File', result.error || `Unable to open ${file.name}.`, 'error');
+            }
+            return;
+        }
+        await leaveCurrentTab();
+        // Load annotations from metadata file
+        const loadedAnnotations = await loadAnnotationsFromFile(file.path);
+        const storedPosition = cursorPositionsRef.current.get(file.path);
+        pendingCursorRef.current = {
+            path: file.path,
+            position: storedPosition ?? { lineNumber: 1, column: 1 },
+        };
+        trackOpenedFile(file.path, result.content);
+        setOpenTabs(prev => [...prev, file]);
+        setCurrentFile(file);
+        setEditorContent(result.content);
+        if (isLatexFileName(file.name)) {
+            triggerCompile();
+        }
+        else {
+            resetCompileNonce();
+        }
+        setTabContents(prev => {
+            const newMap = new Map(prev);
+            newMap.set(file.path, result.content);
+            return newMap;
+        });
+        setAnnotations(loadedAnnotations);
+        setTabAnnotations(prev => {
+            const newMap = new Map(prev);
+            newMap.set(file.path, loadedAnnotations);
+            return newMap;
+        });
+        focusEditor();
     };
-    const handleTabClose = async (file: FileNode, event: React.MouseEvent) => {
-        event.stopPropagation();
+    const handleFileSelectRef = useRef(handleFileSelect);
+    handleFileSelectRef.current = handleFileSelect;
+
+    const handleTabClick = async (file: FileNode) => {
+        if (currentFile?.path === file.path) {
+            return;
+        }
+        await leaveCurrentTab();
+        await activateOpenTab(file);
+    };
+    const handleTabClose = async (file: FileNode, event?: React.MouseEvent) => {
+        event?.stopPropagation();
+        if (!(await resolveUnsavedChanges([file.path]))) {
+            return;
+        }
         // Save annotations before closing if this is the current file
         if (currentFile?.path === file.path) {
-            await saveAnnotationsToFile(file.path, annotations);
+            await saveAnnotationsToFile(file.path, annotationsRef.current);
         }
         else {
             // Save from tab annotations map
@@ -939,49 +1106,82 @@ Your conclusions go here.
         });
         // If closing the current tab, switch to another tab
         if (currentFile?.path === file.path) {
-            if (newTabs.length > 0) {
-                // Switch to the tab to the left, or the first tab if closing the leftmost
-                const newIndex = tabIndex > 0 ? tabIndex - 1 : 0;
-                const newCurrentFile = newTabs[newIndex];
-                const storedPosition = cursorPositionsRef.current.get(newCurrentFile.path);
-                pendingCursorRef.current = {
-                    path: newCurrentFile.path,
-                    position: storedPosition ?? { lineNumber: 1, column: 1 },
-                };
-                setCurrentFile(newCurrentFile);
-                const savedContent = tabContents.get(newCurrentFile.path) || '';
-                const savedAnnotations = tabAnnotations.get(newCurrentFile.path);
-                setEditorContent(savedContent);
-                const newExt = newCurrentFile.name.split('.').pop()?.toLowerCase() ?? '';
-                const newIsLatex = newExt === 'tex' || newExt === 'latex';
-                if (newIsLatex) {
-                    triggerCompile();
-                }
-                else {
-                    resetCompileNonce();
-                }
-                if (savedAnnotations) {
-                    setAnnotations(savedAnnotations);
-                }
-                else {
-                    // Load from metadata file
-                    const loadedAnnotations = await loadAnnotationsFromFile(newCurrentFile.path);
-                    setAnnotations(loadedAnnotations);
-                }
-                focusEditor();
-            }
-            else {
-                // No more tabs open
-                setCurrentFile(null);
-                setEditorContent('');
-                resetCompileNonce();
-                setAnnotations([]);
-                setShowAnnotationsPanel(false);
-                setAnnotationsHidden(true);
-                pendingCursorRef.current = null;
-            }
+            // Switch to the tab to the left, or the first tab if closing the leftmost
+            const newIndex = tabIndex > 0 ? tabIndex - 1 : 0;
+            await activateOpenTab(newTabs.length > 0 ? newTabs[newIndex] : null);
         }
+        forgetFile(file.path);
     };
+
+    // Keep open tabs in sync with renames and deletions in the file tree.
+    const handlePathRenamed = useCallback((oldPath: string, newPath: string) => {
+        const remap = (filePath: string): string | null => {
+            if (samePath(filePath, oldPath)) return newPath;
+            if (isSameOrInside(filePath, oldPath)) return newPath + filePath.slice(oldPath.length);
+            return null;
+        };
+        const affected = openTabsRef.current.filter(tab => remap(tab.path));
+        if (affected.length === 0) {
+            return;
+        }
+        const moveKeys = <T,>(map: Map<string, T>) => {
+            const next = new Map<string, T>();
+            map.forEach((value, key) => next.set(remap(key) ?? key, value));
+            return next;
+        };
+        affected.forEach(tab => cancelAutoSave(tab.path));
+        latestContentRef.current = moveKeys(latestContentRef.current);
+        lastWrittenRef.current = moveKeys(lastWrittenRef.current);
+        cursorPositionsRef.current = moveKeys(cursorPositionsRef.current);
+        const nextDirty = new Set(Array.from(dirtyPathsRef.current).map(filePath => remap(filePath) ?? filePath));
+        dirtyPathsRef.current = nextDirty;
+        setDirtyPaths(nextDirty);
+        const renameNode = (tab: FileNode): FileNode => {
+            const nextPath = remap(tab.path);
+            return nextPath ? { ...tab, path: nextPath, name: fileNameOf(nextPath) } : tab;
+        };
+        setOpenTabs(tabs => tabs.map(renameNode));
+        setTabContents(moveKeys);
+        setTabAnnotations(moveKeys);
+        const current = currentFileRef.current;
+        if (current && remap(current.path)) {
+            const renamed = renameNode(current);
+            const cursor = editorRef.current?.getCursorPosition();
+            if (cursor) {
+                pendingCursorRef.current = { path: renamed.path, position: cursor };
+            }
+            setCurrentFile(renamed);
+        }
+        if (autoSaveRef.current) {
+            affected.forEach(tab => {
+                const nextPath = remap(tab.path);
+                if (nextPath && dirtyPathsRef.current.has(nextPath)) {
+                    void flushFile(nextPath);
+                }
+            });
+        }
+    }, [cancelAutoSave, flushFile]);
+
+    const handlePathDeleted = useCallback((deletedPath: string) => {
+        const removed = openTabsRef.current.filter(tab => isSameOrInside(tab.path, deletedPath));
+        if (removed.length === 0) {
+            return;
+        }
+        const remaining = openTabsRef.current.filter(tab => !isSameOrInside(tab.path, deletedPath));
+        removed.forEach(tab => {
+            forgetFile(tab.path);
+            cursorPositionsRef.current.delete(tab.path);
+        });
+        const removedKeys = new Set(removed.map(tab => tab.path));
+        setOpenTabs(remaining);
+        setTabContents(prev => new Map(Array.from(prev.entries()).filter(([key]) => !removedKeys.has(key))));
+        setTabAnnotations(prev => new Map(Array.from(prev.entries()).filter(([key]) => !removedKeys.has(key))));
+        const current = currentFileRef.current;
+        if (current && removedKeys.has(current.path)) {
+            void activateOpenTab(remaining[0] ?? null);
+        }
+    }, [activateOpenTab, forgetFile]);
+
     useEffect(() => {
         if (!currentFile || !editorRef.current) {
             return;
@@ -1060,9 +1260,7 @@ Your conclusions go here.
             });
             if (updated) {
                 setHighlightColor(color);
-                showNotification(trimmedComment ? 'Annotation Updated' : 'Highlight Updated', trimmedComment
-                    ? 'Saved your updated comment and highlight color.'
-                    : 'Saved your updated highlight color.', 'success');
+                showStatusMessage(trimmedComment ? 'Annotation updated' : 'Highlight updated');
             }
             resetHighlightDialog();
             return;
@@ -1095,15 +1293,14 @@ Your conclusions go here.
         const updated = updateAnnotations(prev => [...prev, newAnnotation]);
         if (updated) {
             setHighlightColor(color);
+            setAnnotationsHidden(false);
             if (highlightDialog.mode === 'create') {
                 setShowAnnotationsPanel(true);
             }
-            showNotification(trimmedComment ? 'Highlight & Comment Saved' : 'Highlight Saved', trimmedComment
-                ? 'Stored your highlight and comment in the project metadata.'
-                : 'Stored your highlight in the project metadata.', 'success');
+            showStatusMessage(trimmedComment ? 'Highlight and comment saved' : 'Highlight saved');
         }
         resetHighlightDialog();
-    }, [annotations, currentFile, highlightDialog, resetHighlightDialog, setHighlightColor, showNotification, updateAnnotations]);
+    }, [annotations, currentFile, highlightDialog, resetHighlightDialog, setHighlightColor, showNotification, showStatusMessage, updateAnnotations]);
     const handleEditAnnotation = useCallback((annotation: Annotation) => {
         pendingHighlightRef.current = null;
         const condensed = annotation.text.replace(/\s+/g, ' ').trim();
@@ -1126,35 +1323,15 @@ Your conclusions go here.
         }
         const updated = updateAnnotations(prev => prev.filter(annotation => annotation.id !== id));
         if (updated) {
-            showNotification('Highlight Removed', 'Removed the highlight and updated the metadata.', 'success');
+            showStatusMessage('Highlight removed');
         }
-    }, [annotations, currentFile, showNotification, updateAnnotations]);
+    }, [annotations, currentFile, showStatusMessage, updateAnnotations]);
     const handleDeleteAnnotationFromDialog = useCallback(() => {
         if (highlightDialog.mode === 'edit' && highlightDialog.annotationId) {
             handleRemoveAnnotation(highlightDialog.annotationId);
         }
         resetHighlightDialog();
     }, [handleRemoveAnnotation, highlightDialog, resetHighlightDialog]);
-    const handleRemoveSelectionHighlight = useCallback(() => {
-        if (!editorRef.current || !currentFile) {
-            showNotification('No Editor', 'Open a file to remove highlights.', 'info');
-            return;
-        }
-        const selection = editorRef.current.getSelection();
-        if (!selection) {
-            showNotification('No Selection', 'Click on or select highlighted text to remove the highlight.', 'info');
-            return;
-        }
-        const match = findAnnotationAtCursor(selection, annotations);
-        if (!match) {
-            showNotification('No Highlight Found', 'The current selection is not highlighted.', 'info');
-            return;
-        }
-        const updated = updateAnnotations(prev => prev.filter(annotation => annotation.id !== match.id));
-        if (updated) {
-            showNotification('Highlight Removed', 'Removed the highlight and updated the metadata.', 'success');
-        }
-    }, [annotations, currentFile, showNotification, updateAnnotations]);
     const handleCursorChange = useCallback((position: CursorPosition) => {
         cursorPositionRef.current = position;
         if (!currentFile) {
@@ -1170,24 +1347,23 @@ Your conclusions go here.
         if (!target?.file || !target.line) {
             return;
         }
-        const normalize = (p: string) => p.replace(/\\/g, '/').toLowerCase();
-        const sameFile = currentFile && normalize(currentFile.path) === normalize(target.file);
-        if (sameFile) {
+        const current = currentFileRef.current;
+        if (current && samePath(current.path, target.file)) {
             editorRef.current?.setCursorPosition({ lineNumber: target.line, column: target.column || 1 });
             return;
         }
-        const pathApi = (window as any).api?.path;
-        const name = pathApi ? pathApi.basename(target.file) : target.file.split(/[\\/]/).pop() || target.file;
+        const openTab = openTabsRef.current.find(tab => samePath(tab.path, target.file));
+        const filePath = openTab?.path ?? target.file;
         pendingCursorRef.current = {
-            path: target.file,
+            path: filePath,
             position: { lineNumber: target.line, column: target.column || 1 },
         };
-        void handleFileSelect({ name, path: target.file, isDirectory: false } as FileNode);
-    }, [currentFile, pendingCursorRef]);
+        cursorPositionsRef.current.set(filePath, { lineNumber: target.line, column: target.column || 1 });
+        void handleFileSelectRef.current(openTab ?? { name: fileNameOf(target.file), path: target.file, isDirectory: false });
+    }, [pendingCursorRef]);
     const handleForwardSearch = useCallback(() => {
         if (!currentFile) return;
-        const ext = currentFile.name.split('.').pop()?.toLowerCase();
-        if (ext !== 'tex' && ext !== 'latex') return;
+        if (!isLatexFileName(currentFile.name)) return;
         const livePosition = editorRef.current?.getCursorPosition();
         const { lineNumber, column } = livePosition || cursorPositionRef.current;
         void previewRef.current?.forwardSearch(lineNumber, column);
@@ -1195,10 +1371,10 @@ Your conclusions go here.
     const handleInstallPackage = async (packageName: string): Promise<void> => {
         const api = (window as any).api;
         try {
-            showNotification('Installing Package', `Installing ${packageName}...`, 'info');
+            showStatusMessage(`Installing ${packageName}...`, 60000);
             const result = await api.installLatexPackage( packageName);
             if (result.success) {
-                showNotification('Package Installed', `${packageName} installed successfully!`, 'success');
+                showStatusMessage(`${packageName} installed`);
                 setMissingPackages(prev => prev.filter(pkg => pkg !== packageName));
             }
             else {
@@ -1214,7 +1390,7 @@ Your conclusions go here.
         const remaining = new Set(missingPackages);
         for (const pkg of missingPackages) {
             try {
-                showNotification('Installing Package', `Installing ${pkg}...`, 'info');
+                showStatusMessage(`Installing ${pkg}...`, 60000);
                 const result = await api.installLatexPackage( pkg);
                 if (result.success) {
                     remaining.delete(pkg);
@@ -1232,8 +1408,9 @@ Your conclusions go here.
         const remainingList = Array.from(remaining);
         setMissingPackages(remainingList);
         if (remainingList.length === 0) {
-            showNotification('All Packages Installed', 'All packages installed successfully!', 'success');
+            showStatusMessage('All packages installed');
             setShowPackageDialog(false);
+            triggerCompile();
         }
     };
     const handleMissingPackages = useCallback((packages: string[]) => {
@@ -1274,6 +1451,26 @@ Your conclusions go here.
                 const def = await (window as any).api.getDefaultProjectsDirectory();
                 if (def?.success) defaultDir = def.path;
             } catch {}
+            // Started with `Openotex --open=<file>`: open that file's project.
+            let openRequest: { file: string; line?: number; project?: string; isDirectory?: boolean } | null = null;
+            try {
+                openRequest = await api.takePendingOpenRequest?.();
+            } catch {}
+            if (openRequest) {
+                const requestedProject = openRequest.isDirectory
+                    ? openRequest.file
+                    : (openRequest.project ?? api.path.dirname(openRequest.file));
+                const validProject = await validateDirectory(requestedProject);
+                if (validProject && !disposed) {
+                    setProjectPath(validProject);
+                    setShowAnnotationsPanel(false);
+                    setAnnotationsHidden(true);
+                    if (!openRequest.isDirectory) {
+                        setPendingOpen({ file: openRequest.file, line: openRequest.line });
+                    }
+                    return;
+                }
+            }
             const candidates = [storedPath, defaultDir];
             for (const candidate of candidates) {
                 const validPath = await validateDirectory(candidate || undefined);
@@ -1335,8 +1532,8 @@ Your conclusions go here.
                             let foundUpdate = false;
 
                             const compareVersions = (v1: string, v2: string): number => {
-                                const parts1 = v1.split('.').map(Number);
-                                const parts2 = v2.split('.').map(Number);
+                                const parts1 = v1.replace(/^v/i, '').split('.').map(Number);
+                                const parts2 = v2.replace(/^v/i, '').split('.').map(Number);
 
                                 for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
                                     const part1 = parts1[i] || 0;
@@ -1350,7 +1547,7 @@ Your conclusions go here.
                             };
 
                             try {
-                                const versionResponse = await fetch('https://openotex.com/version.json');
+                                const versionResponse = await fetch('https://openotex.com/version.json', { cache: 'no-cache' });
                                 if (versionResponse.ok) {
                                     const versionData = await versionResponse.json();
                                     latestVersion = versionData.version || versionData.latest || CURRENT_VERSION;
@@ -1396,7 +1593,7 @@ Your conclusions go here.
                                 );
 
                                 if (userWantsUpdate) {
-                                    
+
                                     await (window as any).api.openExternal(DOWNLOAD_PAGE_URL);
                                 }
                             }
@@ -1456,20 +1653,74 @@ Your conclusions go here.
             }
         };
     }, [projectPath]);
+
+    // Reload open files that were changed by another program (git pull, a
+    // second editor, a sync client) unless they have unsaved edits here.
+    useEffect(() => {
+        const api = (window as any).api;
+        if (!api?.onFilesystemEvent) {
+            return;
+        }
+        return api.onFilesystemEvent(async (payload: { event: string; path: string }) => {
+            if (!payload || (payload.event !== 'change' && payload.event !== 'add')) {
+                return;
+            }
+            const tab = openTabsRef.current.find(item => samePath(item.path, payload.path));
+            if (!tab) {
+                return;
+            }
+            const result = await api.readFile(tab.path);
+            if (!result?.success || typeof result.content !== 'string') {
+                return;
+            }
+            const disk: string = result.content;
+            const latest = latestContentRef.current.get(tab.path);
+            if (disk === latest) {
+                lastWrittenRef.current.set(tab.path, disk);
+                return;
+            }
+            if (disk === lastWrittenRef.current.get(tab.path)) {
+                // Our own earlier write; newer edits are still pending.
+                return;
+            }
+            if (dirtyPathsRef.current.has(tab.path)) {
+                showStatusMessage(`${tab.name} changed on disk. Your unsaved edits were kept.`, 8000);
+                return;
+            }
+            latestContentRef.current.set(tab.path, disk);
+            lastWrittenRef.current.set(tab.path, disk);
+            setTabContents(prev => {
+                const next = new Map(prev);
+                next.set(tab.path, disk);
+                return next;
+            });
+            if (currentFileRef.current && samePath(currentFileRef.current.path, tab.path)) {
+                setEditorContent(disk);
+            }
+            showStatusMessage(`Reloaded ${tab.name} (changed outside Openotex)`);
+            // Keep the PDF in step with sources changed by e.g. git pull.
+            if (autoCompileRef.current && currentFileRef.current && isLatexFileName(currentFileRef.current.name)) {
+                triggerCompile();
+            }
+        });
+    }, [showStatusMessage, triggerCompile]);
+
     const handleContentChange = (content: string) => {
         setEditorContent(content);
-        // Update tab content map
-        if (currentFile) {
-            setTabContents(prev => {
-                const newMap = new Map(prev);
-                newMap.set(currentFile.path, content);
-                return newMap;
-            });
+        if (!currentFile || currentFile.isDirectory) {
+            return;
         }
-        // Auto-save
-        if (autoSave && currentFile && !currentFile.isDirectory) {
-            const api = (window as any).api;
-            api.writeFile( currentFile.path, content);
+        const filePath = currentFile.path;
+        latestContentRef.current.set(filePath, content);
+        // Update tab content map
+        setTabContents(prev => {
+            const newMap = new Map(prev);
+            newMap.set(filePath, content);
+            return newMap;
+        });
+        markDirty(filePath, true);
+        if (autoSave) {
+            scheduleAutoSave(filePath);
         }
         if (!isCurrentFileLatex) {
             if (autoCompileTimeout.current) {
@@ -1479,78 +1730,73 @@ Your conclusions go here.
             resetCompileNonce();
             return;
         }
-        // Auto-compile with debounce
-        if (autoCompile) {
+        // Auto-compile with debounce. Without Auto Save the document compiles
+        // when it is saved instead (Ctrl+S), so the PDF matches the file.
+        if (autoCompile && autoSave) {
             if (autoCompileTimeout.current) {
                 clearTimeout(autoCompileTimeout.current);
             }
             autoCompileTimeout.current = setTimeout(() => {
                 triggerCompile();
-            }, 3000); // Compile after 3 seconds of inactivity
+            }, AUTO_COMPILE_DELAY_MS);
         }
     };
     const handleCompile = useCallback(() => {
         if (!isCurrentFileLatex) {
             return;
         }
+        flushOnNextCompileRef.current = true;
         triggerCompile();
     }, [isCurrentFileLatex, triggerCompile]);
 
+    // Compiling reads files from disk, so pending edits are written first:
+    // always with Auto Save, otherwise only for an explicit Compile/Refresh
+    // (switching tabs must not silently save files).
+    const flushBeforeCompile = useCallback(async (explicit = false) => {
+        const shouldFlush = explicit || autoSaveRef.current || flushOnNextCompileRef.current;
+        flushOnNextCompileRef.current = false;
+        if (!shouldFlush) {
+            return;
+        }
+        const failed = await flushDirtyFiles();
+        if (failed.length > 0) {
+            showStatusMessage(`Could not save ${failed.map(fileNameOf).join(', ')} before compiling`, 6000);
+        }
+    }, [flushDirtyFiles, showStatusMessage]);
+
     const handleSaveCurrentFile = useCallback(async () => {
         if (!currentFile || currentFile.isDirectory) {
-            showNotification('No File Open', 'Open a file to save it.', 'info');
+            showStatusMessage('Open a file to save it.');
             return;
         }
 
-        try {
-            const api = (window as any).api;
-            await api.writeFile( currentFile.path, editorContent);
-            showNotification('File Saved', `Saved ${currentFile.name}`, 'success');
-        } catch (error) {
-            showNotification('Save Failed', `Failed to save ${currentFile.name}: ${error}`, 'error');
+        const saved = await flushFile(currentFile.path, true);
+        if (!saved) {
+            showNotification('Save Failed', `Failed to save ${currentFile.name}.`, 'error');
+            return;
         }
-    }, [currentFile, editorContent, showNotification]);
+        showStatusMessage(`Saved ${currentFile.name}`);
+        if (autoCompile && isLatexFileName(currentFile.name)) {
+            triggerCompile();
+        }
+    }, [autoCompile, currentFile, flushFile, showNotification, showStatusMessage, triggerCompile]);
 
     const handleSaveAllFiles = useCallback(async () => {
         if (openTabs.length === 0) {
-            showNotification('No Files Open', 'No files to save.', 'info');
+            showStatusMessage('No files to save.');
             return;
         }
-
-        try {
-            const api = (window as any).api;
-            let savedCount = 0;
-
-            // Save current file first
-            if (currentFile && !currentFile.isDirectory) {
-                await api.writeFile( currentFile.path, editorContent);
-                savedCount++;
-            }
-
-            // Save all other open tabs
-            for (const [filePath, content] of tabContents.entries()) {
-                if (filePath !== currentFile?.path) {
-                    await api.writeFile( filePath, content);
-                    savedCount++;
-                }
-            }
-
-            showNotification('All Files Saved', `Saved ${savedCount} file${savedCount !== 1 ? 's' : ''}`, 'success');
-        } catch (error) {
-            showNotification('Save Failed', `Failed to save files: ${error}`, 'error');
+        const pending = dirtyPathsRef.current.size;
+        const failed = await flushDirtyFiles();
+        if (failed.length > 0) {
+            showNotification('Save Failed', `Failed to save ${failed.map(fileNameOf).join(', ')}.`, 'error');
+            return;
         }
-    }, [currentFile, editorContent, openTabs, tabContents, showNotification]);
-
-    const showStatusMessage = useCallback((message: string, duration: number = 4000) => {
-        if (statusMessageTimeoutRef.current) {
-            clearTimeout(statusMessageTimeoutRef.current);
+        showStatusMessage(pending === 0 ? 'All files are already saved' : `Saved ${pending} file${pending !== 1 ? 's' : ''}`);
+        if (pending > 0 && autoCompile && currentFile && isLatexFileName(currentFile.name)) {
+            triggerCompile();
         }
-        setStatusMessage(message);
-        statusMessageTimeoutRef.current = setTimeout(() => {
-            setStatusMessage('');
-            statusMessageTimeoutRef.current = null;
-        }, duration);
-    }, []);
+    }, [autoCompile, currentFile, flushDirtyFiles, openTabs, showNotification, showStatusMessage, triggerCompile]);
 
     const handleVersionFreeze = useCallback(async (fileToFreeze?: FileNode) => {
         const targetFile = fileToFreeze || currentFile;
@@ -1601,10 +1847,13 @@ Your conclusions go here.
             const versionedFileName = `${fileNameWithoutExt}_backup_${timestamp}${fileExt}`;
             const versionedFilePath = pathModule.join(timelineFolderPath, versionedFileName);
 
-            // Get content to save (from editor if it's the current file, otherwise read from disk)
+            // Use the newest in-memory text for open files, otherwise read from disk
             let contentToSave: string;
+            const inMemory = latestContentRef.current.get(targetFile.path);
             if (targetFile.path === currentFile?.path) {
                 contentToSave = editorContent;
+            } else if (inMemory !== undefined) {
+                contentToSave = inMemory;
             } else {
                 const readResult = await api.readFile( targetFile.path);
                 if (!readResult.success) {
@@ -1632,6 +1881,83 @@ Your conclusions go here.
             showNotification('Instant Backup Failed', `Error: ${errorMessage}`, 'error');
         }
     }, [currentFile, editorContent, showNotification, showStatusMessage]);
+
+    // `Openotex --open=<file>` while Openotex is running (e.g. from a coding
+    // agent through the MCP server): show the file, switching project if needed.
+    const openRequestHandlerRef = useRef<(request: { file: string; line?: number; project?: string; isDirectory?: boolean }) => Promise<void>>(async () => {});
+    openRequestHandlerRef.current = async request => {
+        const pathModule = (window as any).api.path;
+        const targetProject = request.isDirectory
+            ? request.file
+            : (request.project ?? (projectPath && isSameOrInside(request.file, projectPath) ? projectPath : pathModule.dirname(request.file)));
+        if (projectPath && samePath(targetProject, projectPath)) {
+            if (!request.isDirectory) {
+                handleSyncTexJump({ file: request.file, line: request.line ?? 1, column: 1 });
+            }
+            return;
+        }
+        if (!(await resolveUnsavedChanges())) {
+            return;
+        }
+        if (currentFile) {
+            await saveAnnotationsToFile(currentFile.path, annotationsRef.current);
+        }
+        resetWorkspace();
+        markSessionReady(null);
+        setProjectPath(targetProject);
+        if (!request.isDirectory) {
+            setPendingOpen({ file: request.file, line: request.line });
+        }
+    };
+    useEffect(() => {
+        const api = (window as any).api;
+        if (!api?.onOpenRequest) {
+            return;
+        }
+        return api.onOpenRequest((request: { file: string; line?: number; project?: string; isDirectory?: boolean }) => {
+            void openRequestHandlerRef.current(request);
+        });
+    }, []);
+    useEffect(() => {
+        if (!pendingOpen || !projectPath || sessionReadyProject !== projectPath) {
+            return;
+        }
+        const request = pendingOpen;
+        setPendingOpen(null);
+        handleSyncTexJump({ file: request.file, line: request.line ?? 1, column: 1 });
+    }, [pendingOpen, projectPath, sessionReadyProject, handleSyncTexJump]);
+
+    // Window close: save (Auto Save) or ask about unsaved files first.
+    const closeHandlerRef = useRef<() => Promise<void>>(async () => {});
+    closeHandlerRef.current = async () => {
+        const api = (window as any).api;
+        api.acknowledgeClose?.();
+        try {
+            const proceed = await resolveUnsavedChanges();
+            if (!proceed) {
+                await api.cancelClose?.();
+                return;
+            }
+            const current = currentFileRef.current;
+            if (current) {
+                await saveAnnotationsToFile(current.path, annotationsRef.current);
+            }
+            await persistSession();
+        }
+        catch (error) {
+            console.error('Error while preparing to close:', error);
+        }
+        await api.confirmClose?.();
+    };
+    useEffect(() => {
+        const api = (window as any).api;
+        if (!api?.onCloseRequested) {
+            return;
+        }
+        return api.onCloseRequested(() => {
+            void closeHandlerRef.current();
+        });
+    }, []);
 
     // Cleanup timeout on unmount
     useEffect(() => {
@@ -1695,95 +2021,59 @@ Your conclusions go here.
             editorRef.current?.refreshAnnotations();
         }
     }, [annotationsHidden, annotations]);
+    const keyboardActionsRef = useRef<Record<string, () => void>>({});
+    keyboardActionsRef.current = {
+        newProject: handleNewProject,
+        openProject: () => { void handleOpenProject(); },
+    };
     useEffect(() => {
         const handleKeydown = (event: KeyboardEvent) => {
+            const primary = event.ctrlKey || event.metaKey;
             // Ctrl+` to toggle terminal
-            if ((event.ctrlKey || event.metaKey) && event.key === '`') {
+            if (primary && event.key === '`') {
                 event.preventDefault();
                 handleToggleTerminal();
             }
             // Ctrl+Shift+C to compile (keyboard layout independent)
-            if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === 'KeyC') {
+            if (primary && event.shiftKey && event.code === 'KeyC') {
                 event.preventDefault();
                 if (isCurrentFileLatex) {
                     handleCompile();
                 }
             }
             // Ctrl+S to save current file
-            if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.code === 'KeyS') {
+            if (primary && !event.shiftKey && event.code === 'KeyS') {
                 event.preventDefault();
                 handleSaveCurrentFile();
             }
             // Ctrl+Shift+S to save all files
-            if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === 'KeyS') {
+            if (primary && event.shiftKey && event.code === 'KeyS') {
                 event.preventDefault();
                 handleSaveAllFiles();
             }
             // Ctrl+Shift+V to create version freeze
-            if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === 'KeyV') {
+            if (primary && event.shiftKey && event.code === 'KeyV') {
                 event.preventDefault();
                 handleVersionFreeze();
             }
             // Ctrl+Alt+J: SyncTeX forward search (source -> PDF)
-            if ((event.ctrlKey || event.metaKey) && event.altKey && event.code === 'KeyJ') {
+            if (primary && event.altKey && event.code === 'KeyJ') {
                 event.preventDefault();
                 handleForwardSearch();
+            }
+            // Ctrl+N / Ctrl+O: new and open project (shown in the File menu)
+            if (primary && !event.shiftKey && !event.altKey && event.code === 'KeyN') {
+                event.preventDefault();
+                keyboardActionsRef.current.newProject?.();
+            }
+            if (primary && !event.shiftKey && !event.altKey && event.code === 'KeyO') {
+                event.preventDefault();
+                keyboardActionsRef.current.openProject?.();
             }
         };
         window.addEventListener('keydown', handleKeydown);
         return () => window.removeEventListener('keydown', handleKeydown);
     }, [isCurrentFileLatex, handleCompile, handleToggleTerminal, handleSaveCurrentFile, handleSaveAllFiles, handleVersionFreeze, handleForwardSearch]);
-    // Auto-save effect
-    useEffect(() => {
-        if (!autoSave || !projectPath)
-            return;
-        const autoSaveInterval = setInterval(async () => {
-            const api = (window as any).api;
-            const path = (window as any).api.path;
-            try {
-                // Get all LaTeX-related files in the project directory
-                const getAllFiles = async (dirPath: string): Promise<string[]> => {
-                    const result = await api.readDirectory( dirPath);
-                    if (!result.success)
-                        return [];
-                    const files: string[] = [];
-                    for (const file of result.files) {
-                        if (file.isDirectory) {
-                            // Recursively get files from subdirectories
-                            const subFiles = await getAllFiles(file.path);
-                            files.push(...subFiles);
-                        }
-                        else {
-                            // Check if it's a LaTeX-related file
-                            const ext = path.extname(file.name).toLowerCase();
-                            if (['.tex', '.bib', '.cls', '.sty', '.bst', '.dtx', '.ins'].includes(ext)) {
-                                files.push(file.path);
-                            }
-                        }
-                    }
-                    return files;
-                };
-                const latexFiles = await getAllFiles(projectPath);
-                // Save all files that are currently open in tabs
-                for (const [filePath, content] of tabContents.entries()) {
-                    if (latexFiles.includes(filePath)) {
-                        await api.writeFile( filePath, content);
-                    }
-                }
-                // Also save the current file if it's not already saved
-                if (currentFile && !currentFile.isDirectory) {
-                    const ext = path.extname(currentFile.name).toLowerCase();
-                    if (['.tex', '.bib', '.cls', '.sty', '.bst', '.dtx', '.ins'].includes(ext)) {
-                        await api.writeFile( currentFile.path, editorContent);
-                    }
-                }
-            }
-            catch (error) {
-                console.error('Auto-save error:', error);
-            }
-        }, 60000); // 1 minute = 60000ms
-        return () => clearInterval(autoSaveInterval);
-    }, [autoSave, projectPath, tabContents, currentFile, editorContent]);
 
     return (
         <div className="app">
@@ -1806,6 +2096,7 @@ Your conclusions go here.
             onToggleAutoSave={toggleAutoSave}
             isAutoSaveEnabled={autoSave}
             onShowAbout={() => setShowAboutDialog(true)}
+            onShowMcp={() => setShowMcpDialog(true)}
         />
         <Toolbar
             currentFile={currentFile}
@@ -1859,7 +2150,10 @@ Your conclusions go here.
                                     projectPath={projectPath}
                                     onZipFolder={handleSaveFolderAsZip}
                                     onVersionFreeze={handleVersionFreeze}
+                                    onPathRenamed={handlePathRenamed}
+                                    onPathDeleted={handlePathDeleted}
                                     refreshTrigger={fileExplorerRefreshTrigger}
+                                    activeFilePath={currentFile?.path ?? null}
                                 />
                             ) : (
                                 <GitPanel projectPath={projectPath} />
@@ -1871,6 +2165,7 @@ Your conclusions go here.
                             <TabBar
                                 openTabs={openTabs}
                                 activeTab={currentFile}
+                                dirtyPaths={dirtyPaths}
                                 onTabClick={handleTabClick}
                                 onTabClose={handleTabClose}
                             />
@@ -1879,6 +2174,8 @@ Your conclusions go here.
                                 content={editorContent}
                                 onChange={handleContentChange}
                                 currentFile={currentFile}
+                                projectPath={projectPath}
+                                openFilePaths={openFilePaths}
                                 annotations={annotations}
                                 annotationsHidden={annotationsHidden}
                                 onAnnotate={handleAddHighlightAnnotation}
@@ -1913,7 +2210,9 @@ Your conclusions go here.
                                 compileNonce={compileNonce}
                                 currentFileExtension={currentFileExtension}
                                 currentFilePath={currentFile?.path ?? null}
+                                projectPath={projectPath}
                                 latexEngine={latexEngine}
+                                beforeCompile={flushBeforeCompile}
                                 onMissingPackages={handleMissingPackages}
                                 onSyncTexJump={handleSyncTexJump}
                             />
@@ -1963,15 +2262,18 @@ Your conclusions go here.
             onClose={() => setShowPackageDialog(false)}
         />
         <AboutDialog isOpen={showAboutDialog} onClose={() => setShowAboutDialog(false)} />
+        <McpDialog isOpen={showMcpDialog} onClose={() => setShowMcpDialog(false)} />
         <NewProjectDialog
             isOpen={showNewProjectDialog}
             defaultDirectory={defaultProjectsDirectory}
+            templates={PROJECT_TEMPLATES}
             onConfirm={handleCreateNewProject}
             onCancel={() => setShowNewProjectDialog(false)}
         />
         <StatusBar
             autoCompile={autoCompile}
             autoSave={autoSave}
+            unsavedCount={dirtyPaths.size}
             onToggleAutoCompile={toggleAutoCompile}
             onToggleAutoSave={toggleAutoSave}
             statusMessage={statusMessage}
@@ -1987,4 +2289,3 @@ const App: React.FC = () => (
 );
 
 export default App;
-

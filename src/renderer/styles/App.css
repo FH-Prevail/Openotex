@@ -119,3 +119,12 @@
 }
 
 
+
+/* Long unbreakable content (e.g. paths in compiler errors) must never widen
+   the split layout beyond the window. */
+.workspace,
+.main-container,
+.split-container,
+.panel {
+  min-width: 0;
+}

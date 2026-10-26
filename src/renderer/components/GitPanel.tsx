@@ -19,11 +19,20 @@ const statusLabels: Record<string, string> = {
   C: 'Copied',
   U: 'Updated',
   '?': 'Untracked',
+  '??': 'Untracked',
+  '!!': 'Ignored',
 };
+
+// Porcelain status uses two columns (staged, unstaged); label by the first
+// meaningful letter so "MM" or "AM" still reads as a word.
+const labelForStatus = (status: string) => (
+  statusLabels[status] || statusLabels[status.replace(/\s/g, '').charAt(0)] || status
+);
 
 const GitPanel: React.FC<GitPanelProps> = ({ projectPath }) => {
   const api = (window as any).api;
   const [changes, setChanges] = useState<GitChange[]>([]);
+  const [branch, setBranch] = useState<string>('');
   const [gitAvailable, setGitAvailable] = useState<'unknown' | 'available' | 'missing'>('unknown');
   const [repoState, setRepoState] = useState<'unknown' | 'repo' | 'not-repo' | 'inactive'>('unknown');
   const [commitMessage, setCommitMessage] = useState('');
@@ -65,6 +74,7 @@ const GitPanel: React.FC<GitPanelProps> = ({ projectPath }) => {
       } else {
         setRepoState('repo');
         setChanges(result.files || []);
+        setBranch(result.branch || '');
       }
     } catch (err: any) {
       setRepoState('unknown');
@@ -167,7 +177,9 @@ const GitPanel: React.FC<GitPanelProps> = ({ projectPath }) => {
     <div className="git-panel">
       <div className="git-panel__header">
         <div>
-          <div className="git-panel__title">Git</div>
+          <div className="git-panel__title">
+            Git{repoState === 'repo' && branch ? ` · ${branch}` : ''}
+          </div>
           <div className="git-panel__subtitle">
             {isReady ? projectPath : 'Open a project to use Git'}
           </div>
@@ -242,7 +254,7 @@ const GitPanel: React.FC<GitPanelProps> = ({ projectPath }) => {
                 <ul className="git-panel__list">
                   {changes.map(change => (
                     <li key={`${change.status}-${change.path}`} className="git-panel__list-item">
-                      <span className="git-panel__badge">{statusLabels[change.status] || change.status}</span>
+                      <span className="git-panel__badge">{labelForStatus(change.status)}</span>
                       <span className="git-panel__path">{change.path}</span>
                     </li>
                   ))}

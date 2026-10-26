@@ -29,6 +29,7 @@ interface MenuBarProps {
   onToggleAutoSave?: () => void;
   isAutoSaveEnabled?: boolean;
   onShowAbout?: () => void;
+  onShowMcp?: () => void;
 }
 
 const MenuBar: React.FC<MenuBarProps> = ({
@@ -50,6 +51,7 @@ const MenuBar: React.FC<MenuBarProps> = ({
   onToggleAutoSave,
   isAutoSaveEnabled = false,
   onShowAbout,
+  onShowMcp,
 }) => {
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
 
@@ -189,7 +191,7 @@ const MenuBar: React.FC<MenuBarProps> = ({
             {onToggleAutoSave && (
               <button className="menu-item" onClick={execute(onToggleAutoSave)}>
                 {renderTick(isAutoSaveEnabled)}
-                {renderMenuLabel('Auto Save (1 min)')}
+                {renderMenuLabel('Auto Save')}
               </button>
             )}
           </div>
@@ -224,6 +226,12 @@ const MenuBar: React.FC<MenuBarProps> = ({
         </button>
         {activeMenu === 'help' && (
           <div className="menu-dropdown" onClick={event => event.stopPropagation()}>
+            {onShowMcp && (
+              <button className="menu-item" onClick={execute(onShowMcp)}>
+                <span className="menu-icon-slot" />
+                {renderMenuLabel('Connect a Coding Agent (MCP)…')}
+              </button>
+            )}
             {onShowAbout && (
               <button className="menu-item" onClick={execute(onShowAbout)}>
                 <span className="menu-icon-slot" />

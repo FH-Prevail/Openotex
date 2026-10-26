@@ -43,5 +43,35 @@ const texFile = 'C:/work/paper/ieee.tex';
   assert.equal(diagnostics[0].line, 99);
 }
 
+{
+  // TeX wraps output at 79 characters; paths with spaces are not quoted.
+  const wrap = (text: string) => (text.match(/.{1,79}/g) || []).join('\n');
+  const log = [
+    'This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2024)',
+    wrap('(C:/work/My Thesis With A Rather Long Folder Name/and/even/more/folders/main.tex'),
+    'LaTeX2e <2023-11-01>',
+    '(C:/texlive/2024/texmf-dist/tex/latex/base/report.cls',
+    'Document Class: report 2023/05/17 v1.4n Standard LaTeX document class',
+    ')',
+    ' (chapters/intro.tex',
+    'Chapter 1.',
+    '',
+    wrap("LaTeX Warning: Citation `knuth1984-with-a-rather-long-key-to-force-wrapping' on page 2 undefined on input line 3."),
+    '',
+    ') [2]',
+    "LaTeX Warning: Reference `fig:x' on page 3 undefined on input line 9.",
+    'C:/work/chapters/intro.tex:5:  ==> Fatal error occurred, no output PDF file produced!',
+    ')',
+  ].join('\n');
+  const diagnostics = parseLatexDiagnostics(log, 'C:/work/main.tex');
+  assert.deepEqual(
+    diagnostics.map(diagnostic => [diagnostic.code, diagnostic.file, diagnostic.line]),
+    [
+      ['undefined-citation', 'chapters/intro.tex', 3],
+      ['undefined-reference', 'C:/work/main.tex', 9],
+    ]
+  );
+}
+
 console.log('latexDiagnostics tests passed');
 

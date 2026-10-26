@@ -4,6 +4,7 @@ import '../styles/StatusBar.css';
 interface StatusBarProps {
   autoCompile: boolean;
   autoSave: boolean;
+  unsavedCount?: number;
   onToggleAutoCompile: () => void;
   onToggleAutoSave: () => void;
   statusMessage?: string;
@@ -12,6 +13,7 @@ interface StatusBarProps {
 const StatusBar: React.FC<StatusBarProps> = ({
   autoCompile,
   autoSave,
+  unsavedCount = 0,
   onToggleAutoCompile,
   onToggleAutoSave,
   statusMessage,
@@ -32,13 +34,20 @@ const StatusBar: React.FC<StatusBarProps> = ({
         <button
           className={`status-item ${autoCompile ? 'active' : 'inactive'}`}
           onClick={onToggleAutoCompile}
-          title={`Auto Compile is ${autoCompile ? 'ON' : 'OFF'} - Click to toggle`}
+          title={autoSave
+            ? `Auto Compile is ${autoCompile ? 'ON' : 'OFF'} - Click to toggle`
+            : `Auto Compile is ${autoCompile ? 'ON (compiles when you save)' : 'OFF'} - Click to toggle`}
         >
           <span className="status-label">Auto Compile:</span>
           <span className={`status-value ${autoCompile ? 'on' : 'off'}`}>
             {autoCompile ? 'ON' : 'OFF'}
           </span>
         </button>
+        {unsavedCount > 0 && !autoSave && (
+          <span className="status-unsaved" title="Press Ctrl+Shift+S to save all files">
+            {unsavedCount} unsaved
+          </span>
+        )}
       </div>
       <div className="status-bar-center">
         {statusMessage && (
@@ -46,7 +55,7 @@ const StatusBar: React.FC<StatusBarProps> = ({
         )}
       </div>
       <div className="status-bar-right">
-        <span className="status-info">Ctrl+S: Save | Ctrl+Shift+S: Save All</span>
+        <span className="status-info">Ctrl+S: Save | Ctrl+Shift+C: Compile | Ctrl+Alt+J: Find in PDF</span>
       </div>
     </div>
   );

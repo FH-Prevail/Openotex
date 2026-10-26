@@ -37,11 +37,64 @@ export const detectMissingLatexPackage = (output: string): string | null => {
   return null;
 };
 
+// TeX wraps its console output and .log at 79 characters (max_print_line),
+// splitting file names and long warnings. Re-join those physical lines.
+const TEX_LINE_WIDTH = 79;
+const joinWrappedLines = (rawLines: string[]): string[] => {
+  const lines: string[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    let line = rawLines[i];
+    while (line.length > 0 && line.length % TEX_LINE_WIDTH === 0 && i + 1 < rawLines.length && rawLines[i + 1].length > 0) {
+      line += rawLines[++i];
+    }
+    lines.push(line);
+  }
+  return lines;
+};
+
+const TEX_SOURCE_FILE = /\.(?:tex|ltx|latex)$/i;
+
+// LaTeX reports "(file" when it starts reading a file and ")" when done.
+// Following that nesting tells which source file an "on input line N"
+// warning belongs to, e.g. a chapter pulled in with \include.
+const createInputFileTracker = () => {
+  const stack: Array<string | null> = [];
+  return {
+    reset: () => { stack.length = 0; },
+    current: (): string | undefined => {
+      for (let i = stack.length - 1; i >= 0; i--) {
+        const entry = stack[i];
+        if (entry && TEX_SOURCE_FILE.test(entry)) return entry;
+      }
+      return undefined;
+    },
+    consume: (line: string) => {
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '(') {
+          const rest = line.slice(i + 1);
+          const match = rest.match(/^"([^"]+)"/)
+            || rest.match(/^((?:[A-Za-z]:)?[^\s()"{}[\]]*\.[A-Za-z]{1,8})(?=[\s()[\]{}]|$)/);
+          if (match) {
+            stack.push(match[1]);
+            i += match[0].length;
+          } else {
+            stack.push(null);
+          }
+        } else if (char === ')') {
+          stack.pop();
+        }
+      }
+    },
+  };
+};
+
 export const parseLatexDiagnostics = (output: string, texFilePath?: string): LatexDiagnostic[] => {
   const normalized = output.replace(/\r\n/g, '\n');
-  const lines = normalized.split('\n');
+  const lines = joinWrappedLines(normalized.split('\n'));
   const diagnostics: LatexDiagnostic[] = [];
   const seen = new Set<string>();
+  const inputFiles = createInputFileTracker();
 
   const missingPackage = detectMissingLatexPackage(output);
   if (missingPackage) {
@@ -55,10 +108,20 @@ export const parseLatexDiagnostics = (output: string, texFilePath?: string): Lat
 
   for (const rawLine of lines) {
     const line = rawLine.trim();
+    // Every TeX run starts with a banner; the file nesting starts over.
+    if (/^This is (?:pdf|Xe|Lua|e-)?(?:Hi)?TeX/i.test(line)) {
+      inputFiles.reset();
+    }
+    const currentFile = inputFiles.current() ?? texFilePath;
+    inputFiles.consume(rawLine);
     if (!line) continue;
 
     const fileLine = line.match(/^(.+?\.tex):(\d+):\s*(.+)$/i);
     if (fileLine) {
+      // The follow-up "==> Fatal error occurred" line repeats the location.
+      if (/^==> Fatal error occurred/i.test(fileLine[3].trim())) {
+        continue;
+      }
       pushUnique(diagnostics, seen, {
         severity: /warning/i.test(fileLine[3]) ? 'warning' : 'error',
         file: fileLine[1],
@@ -73,7 +136,7 @@ export const parseLatexDiagnostics = (output: string, texFilePath?: string): Lat
     if (missingImage) {
       pushUnique(diagnostics, seen, {
         severity: 'error',
-        file: texFilePath,
+        file: currentFile,
         line: Number(missingImage[2]),
         message: `Missing image or input file: ${missingImage[1]}`,
         code: 'missing-file'
@@ -85,7 +148,7 @@ export const parseLatexDiagnostics = (output: string, texFilePath?: string): Lat
     if (citation) {
       pushUnique(diagnostics, seen, {
         severity: 'warning',
-        file: texFilePath,
+        file: currentFile,
         line: Number(citation[2]),
         message: `Undefined citation: ${citation[1]}`,
         code: 'undefined-citation'
@@ -97,7 +160,7 @@ export const parseLatexDiagnostics = (output: string, texFilePath?: string): Lat
     if (reference) {
       pushUnique(diagnostics, seen, {
         severity: 'warning',
-        file: texFilePath,
+        file: currentFile,
         line: Number(reference[2]),
         message: `Undefined reference: ${reference[1]}`,
         code: 'undefined-reference'
@@ -108,7 +171,7 @@ export const parseLatexDiagnostics = (output: string, texFilePath?: string): Lat
     if (/^! LaTeX Error:/i.test(line) || /^! Package .* Error:/i.test(line) || /^! Undefined control sequence/i.test(line) || /^! Emergency stop/i.test(line)) {
       pushUnique(diagnostics, seen, {
         severity: 'error',
-        file: texFilePath,
+        file: currentFile,
         message: line.replace(/^!\s*/, ''),
         code: 'latex-error'
       });
@@ -123,7 +186,9 @@ export const summarizeLatexError = (output: string, texFilePath?: string): strin
   const firstError = diagnostics.find(diagnostic => diagnostic.severity === 'error') || diagnostics[0];
 
   if (firstError) {
-    const location = firstError.line ? `${firstError.file || texFilePath || 'LaTeX'}:${firstError.line}: ` : '';
+    // Only the file name: full paths make the summary hard to read.
+    const locationFile = (firstError.file || texFilePath || 'LaTeX').split(/[\\/]/).pop();
+    const location = firstError.line ? `${locationFile}:${firstError.line}: ` : '';
     return `${location}${firstError.message}`;
   }
 

@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   FiFile,
+  FiFileText,
+  FiImage,
   FiFolder,
   FiChevronRight,
   FiChevronDown,
@@ -11,10 +13,12 @@ import {
   FiArchive,
   FiExternalLink,
   FiClock,
+  FiMonitor,
 } from 'react-icons/fi';
 import InputDialog from './InputDialog';
 import ConfirmDialog from './ConfirmDialog';
 import ImagePreviewDialog from './ImagePreviewDialog';
+import { isLikelyBinaryFile, isSameOrInside, samePath } from '../utils/paths';
 import '../styles/FileExplorer.css';
 
 interface FileNode {
@@ -30,11 +34,29 @@ interface FileExplorerProps {
   projectPath: string;
   onZipFolder: (folderPath: string) => void;
   onVersionFreeze: (file: FileNode) => void;
+  onPathRenamed?: (oldPath: string, newPath: string) => void;
+  onPathDeleted?: (deletedPath: string) => void;
   refreshTrigger?: number;
+  activeFilePath?: string | null;
 }
 
-const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, onZipFolder, onVersionFreeze, refreshTrigger }) => {
+// Hidden from the tree: VCS metadata, build output and Openotex bookkeeping.
+const HIDDEN_DIRECTORIES = new Set(['.git', '.openotex']);
+const TEXT_EXTENSIONS = new Set(['tex', 'latex', 'ltx', 'bib', 'sty', 'cls', 'bst', 'md', 'markdown', 'txt', 'json', 'yml', 'yaml', 'csv']);
+const INVALID_NAME_CHARS = /[\\/:*?"<>|]/;
+
+const FileExplorer: React.FC<FileExplorerProps> = ({
+  onFileSelect,
+  projectPath,
+  onZipFolder,
+  onVersionFreeze,
+  onPathRenamed,
+  onPathDeleted,
+  refreshTrigger,
+  activeFilePath,
+}) => {
   const [files, setFiles] = useState<FileNode[]>([]);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -80,51 +102,86 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
   });
   const [dragDestination, setDragDestination] = useState<string | null>(null);
   const reloadTimeoutRef = useRef<number | null>(null);
+  // Expanded folders survive refreshes (file watcher events, renames, ...).
+  const expandedPathsRef = useRef<Set<string>>(new Set());
+  const reloadRequestRef = useRef(0);
 
-  const loadDirectory = useCallback(async (dirPath: string, parentNode?: FileNode) => {
+  const closeInputDialog = () => setInputDialog(prev => ({ ...prev, isOpen: false }));
+  const closeConfirmDialog = () => setConfirmDialog(prev => ({ ...prev, isOpen: false }));
+
+  const readChildren = useCallback(async (dirPath: string): Promise<FileNode[] | null> => {
     const result = await (window as any).api.readDirectory(dirPath);
-
-    if (result.success) {
-      const fileNodes: FileNode[] = result.files
-        .filter((file: any) => {
-          // Filter out metadata files and session files
-          if (file.name.endsWith('.metadata')) return false;
-          if (file.name === '.openotex-session.yml') return false;
-          return true;
-        })
-        .sort((a: any, b: any) => {
-          if (a.isDirectory && !b.isDirectory) return -1;
-          if (!a.isDirectory && b.isDirectory) return 1;
-          return a.name.localeCompare(b.name);
-        })
-        .map((file: any) => ({
-          name: file.name,
-          path: file.path,
-          isDirectory: file.isDirectory,
-          children: file.isDirectory ? [] : undefined,
-          expanded: false
-        }));
-
-      if (parentNode) {
-        setFiles(prevFiles => updateNodeChildren(prevFiles, parentNode.path, fileNodes));
-      } else {
-        setFiles(fileNodes);
-      }
+    if (!result.success) {
+      return null;
     }
+    return result.files
+      .filter((file: any) => {
+        // Filter out metadata files, session files and hidden build folders
+        if (file.name.endsWith('.metadata')) return false;
+        if (file.name === '.openotex-session.yml') return false;
+        if (file.isDirectory && HIDDEN_DIRECTORIES.has(file.name)) return false;
+        return true;
+      })
+      .sort((a: any, b: any) => {
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
+        return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      })
+      .map((file: any) => ({
+        name: file.name,
+        path: file.path,
+        isDirectory: file.isDirectory,
+        children: file.isDirectory ? [] : undefined,
+        expanded: false
+      }));
   }, []);
 
-  useEffect(() => {
-    if (projectPath) {
-      loadDirectory(projectPath);
+  const buildTree = useCallback(async (dirPath: string, depth = 0): Promise<FileNode[] | null> => {
+    const nodes = await readChildren(dirPath);
+    if (!nodes) {
+      return null;
     }
-  }, [projectPath, loadDirectory]);
+    for (const node of nodes) {
+      if (node.isDirectory && depth < 16 && expandedPathsRef.current.has(node.path)) {
+        const children = await buildTree(node.path, depth + 1);
+        if (children) {
+          node.children = children;
+          node.expanded = true;
+        }
+        else {
+          expandedPathsRef.current.delete(node.path);
+        }
+      }
+    }
+    return nodes;
+  }, [readChildren]);
+
+  const reloadTree = useCallback(async () => {
+    if (!projectPath) {
+      setFiles([]);
+      return;
+    }
+    const requestId = ++reloadRequestRef.current;
+    const tree = await buildTree(projectPath);
+    if (requestId !== reloadRequestRef.current) {
+      return;
+    }
+    setFiles(tree ?? []);
+    setHasLoaded(true);
+  }, [buildTree, projectPath]);
+
+  useEffect(() => {
+    expandedPathsRef.current = new Set();
+    setHasLoaded(false);
+    void reloadTree();
+  }, [projectPath, reloadTree]);
 
   // Refresh when refreshTrigger changes (e.g., after version freeze)
   useEffect(() => {
     if (projectPath && refreshTrigger && refreshTrigger > 0) {
-      loadDirectory(projectPath);
+      void reloadTree();
     }
-  }, [refreshTrigger, projectPath, loadDirectory]);
+  }, [refreshTrigger, projectPath, reloadTree]);
 
   useEffect(() => {
     const api = (window as any).api;
@@ -132,8 +189,12 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       return;
     }
 
-    const dispose = api.onFilesystemEvent((payload: { root?: string; path?: string }) => {
+    const dispose = api.onFilesystemEvent((payload: { root?: string; path?: string; event?: string }) => {
       if (!payload || payload.root !== projectPath) {
+        return;
+      }
+      // Content changes (every save) do not change the tree.
+      if (payload.event === 'change') {
         return;
       }
 
@@ -142,8 +203,8 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       }
       reloadTimeoutRef.current = window.setTimeout(() => {
         reloadTimeoutRef.current = null;
-        loadDirectory(projectPath);
-      }, 200);
+        void reloadTree();
+      }, 250);
     });
 
     return () => {
@@ -153,80 +214,48 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       }
       dispose?.();
     };
-  }, [projectPath, loadDirectory]);
+  }, [projectPath, reloadTree]);
 
-  const updateNodeChildren = (
-    nodes: FileNode[],
-    targetPath: string,
-    children: FileNode[]
-  ): FileNode[] => {
+  const setNodeState = (nodes: FileNode[], targetPath: string, update: Partial<FileNode>): FileNode[] => {
     return nodes.map(node => {
       if (node.path === targetPath) {
-        return { ...node, children, expanded: true };
+        return { ...node, ...update };
       }
       if (node.children) {
-        return { ...node, children: updateNodeChildren(node.children, targetPath, children) };
+        return { ...node, children: setNodeState(node.children, targetPath, update) };
       }
       return node;
     });
+  };
+
+  const toggleDirectory = async (directory: FileNode) => {
+    if (directory.expanded) {
+      expandedPathsRef.current.delete(directory.path);
+      setFiles(prev => setNodeState(prev, directory.path, { expanded: false }));
+      return;
+    }
+    expandedPathsRef.current.add(directory.path);
+    const children = await buildTree(directory.path);
+    if (children) {
+      setFiles(prev => setNodeState(prev, directory.path, { children, expanded: true }));
+    }
+  };
+
+  const isImageFile = (fileName: string) => {
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (!ext) return false;
+    return ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg', 'webp'].includes(ext);
   };
 
   const handleFileClick = (file: FileNode) => {
     setSelectedFile(file);
-    if (!file.isDirectory && !isImageFile(file.name)) {
-      onFileSelect(file);
-    } else if (file.children && file.children.length === 0) {
-      loadDirectory(file.path, file);
-    } else {
-      toggleExpand(file);
-    }
-  };
-
-  const toggleExpand = (file: FileNode) => {
-    setFiles(prevFiles => toggleNodeExpansion(prevFiles, file.path));
-  };
-
-  const toggleNodeExpansion = (nodes: FileNode[], targetPath: string): FileNode[] => {
-    return nodes.map(node => {
-      if (node.path === targetPath) {
-        return { ...node, expanded: !node.expanded };
-      }
-      if (node.children) {
-        return { ...node, children: toggleNodeExpansion(node.children, targetPath) };
-      }
-      return node;
-    });
-  };
-
-  const findNodeByPath = (nodes: FileNode[], targetPath: string): FileNode | null => {
-    for (const node of nodes) {
-      if (node.path === targetPath) {
-        return node;
-      }
-      if (node.children) {
-        const found = findNodeByPath(node.children, targetPath);
-        if (found) {
-          return found;
-        }
-      }
-    }
-    return null;
-  };
-
-  const refreshDirectory = (dirPath: string) => {
-    if (!dirPath) return;
-    if (!projectPath) return;
-
-    if (dirPath === projectPath) {
-      loadDirectory(projectPath);
+    if (file.isDirectory) {
+      void toggleDirectory(file);
       return;
     }
-
-    const parentNode = findNodeByPath(files, dirPath);
-    if (parentNode) {
-      loadDirectory(dirPath, parentNode);
-    } else {
-      loadDirectory(projectPath);
+    // Images and other binary files only get selected; double-click opens them.
+    if (!isImageFile(file.name) && !isLikelyBinaryFile(file.name)) {
+      onFileSelect(file);
     }
   };
 
@@ -263,7 +292,10 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
     try {
       const result = await (window as any).api.copyPaths(sourcePaths, destination);
       if (result?.success) {
-        refreshDirectory(destination);
+        if (!samePath(destination, projectPath)) {
+          expandedPathsRef.current.add(destination);
+        }
+        void reloadTree();
       } else if (result?.error) {
         alert(`Failed to copy files: ${result.error}`);
       }
@@ -381,9 +413,12 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       directoryPath = projectPath || '';
     }
 
+    // Keep the menu inside the window.
+    const x = Math.min(e.clientX, window.innerWidth - 230);
+    const y = Math.min(e.clientY, window.innerHeight - 300);
     setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
+      x,
+      y,
       target: file,
       directoryPath,
       parentPath,
@@ -394,18 +429,12 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
     if (!projectPath) return;
     e.preventDefault();
     setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
+      x: Math.min(e.clientX, window.innerWidth - 230),
+      y: Math.min(e.clientY, window.innerHeight - 150),
       target: null,
       directoryPath: projectPath,
       parentPath: projectPath,
     });
-  };
-
-  const isImageFile = (fileName: string) => {
-    const ext = fileName.split('.').pop()?.toLowerCase();
-    if (!ext) return false;
-    return ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'svg', 'webp'].includes(ext);
   };
 
   const getMimeType = (fileName: string) => {
@@ -429,6 +458,16 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
     }
   };
 
+  const validateName = (name: string): string | null => {
+    if (!name || name === '.' || name === '..') {
+      return 'Please enter a name.';
+    }
+    if (INVALID_NAME_CHARS.test(name)) {
+      return 'Names cannot contain any of these characters: \\ / : * ? " < > |';
+    }
+    return null;
+  };
+
   const handleCreateFile = async () => {
     if (!contextMenu) return;
     const parentPath = contextMenu.directoryPath;
@@ -439,19 +478,30 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       isOpen: true,
       title: 'Create New File',
       label: 'File name:',
-      placeholder: 'document.tex',
+      placeholder: 'chapter.tex',
       defaultValue: '',
       onConfirm: async (fileName: string) => {
+        const invalid = validateName(fileName);
+        if (invalid) {
+          alert(invalid);
+          return;
+        }
         const path = (window as any).api.path;
         const newFilePath = path.join(parentPath, fileName);
         const result = await (window as any).api.createFile(newFilePath);
 
+        closeInputDialog();
         if (result.success) {
-          refreshDirectory(parentPath);
+          if (!samePath(parentPath, projectPath)) {
+            expandedPathsRef.current.add(parentPath);
+          }
+          await reloadTree();
+          if (!isLikelyBinaryFile(fileName)) {
+            onFileSelect({ name: fileName, path: newFilePath, isDirectory: false });
+          }
         } else {
           alert(`Error creating file: ${result.error}`);
         }
-        setInputDialog({ ...inputDialog, isOpen: false });
       },
     });
   };
@@ -474,19 +524,27 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       isOpen: true,
       title: 'Create New Folder',
       label: 'Folder name:',
-      placeholder: 'my-folder',
+      placeholder: 'figures',
       defaultValue: '',
       onConfirm: async (folderName: string) => {
+        const invalid = validateName(folderName);
+        if (invalid) {
+          alert(invalid);
+          return;
+        }
         const path = (window as any).api.path;
         const newFolderPath = path.join(parentPath, folderName);
         const result = await (window as any).api.createDirectory(newFolderPath);
 
+        closeInputDialog();
         if (result.success) {
-          refreshDirectory(parentPath);
+          if (!samePath(parentPath, projectPath)) {
+            expandedPathsRef.current.add(parentPath);
+          }
+          void reloadTree();
         } else {
           alert(`Error creating folder: ${result.error}`);
         }
-        setInputDialog({ ...inputDialog, isOpen: false });
       },
     });
   };
@@ -495,8 +553,6 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
     if (!contextMenu || !contextMenu.target) return;
     const fileToDelete = contextMenu.target;
     const isDirectory = fileToDelete.isDirectory;
-    const { directoryPath, parentPath, target } = contextMenu;
-    const refreshTarget = target?.isDirectory ? (parentPath || projectPath) : directoryPath;
     setContextMenu(null);
 
     setConfirmDialog({
@@ -504,23 +560,20 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       title: isDirectory ? 'Delete Folder' : 'Delete File',
       message: `Are you sure you want to delete the ${isDirectory ? 'folder' : 'file'} "${fileToDelete.name}"? This action cannot be undone.`,
       onConfirm: async () => {
-      const result = await (window as any).api.deletePath(fileToDelete.path);
+        closeConfirmDialog();
+        const result = await (window as any).api.deletePath(fileToDelete.path);
 
         if (result.success) {
-          if (refreshTarget) {
-            refreshDirectory(refreshTarget);
-          } else if (projectPath) {
-            refreshDirectory(projectPath);
-          }
-        } else {
-          setConfirmDialog({
-            isOpen: true,
-            title: 'Error',
-            message: `Failed to delete ${isDirectory ? 'folder' : 'file'}: ${result.error}`,
-            onConfirm: () => setConfirmDialog({ ...confirmDialog, isOpen: false }),
+          Array.from(expandedPathsRef.current).forEach(expanded => {
+            if (isSameOrInside(expanded, fileToDelete.path)) {
+              expandedPathsRef.current.delete(expanded);
+            }
           });
+          onPathDeleted?.(fileToDelete.path);
+          void reloadTree();
+        } else {
+          alert(`Failed to delete ${isDirectory ? 'folder' : 'file'}: ${result.error}`);
         }
-        setConfirmDialog({ ...confirmDialog, isOpen: false });
       },
     });
   };
@@ -528,7 +581,6 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
   const handleRename = () => {
     if (!contextMenu || !contextMenu.target) return;
     const fileToRename = contextMenu.target;
-    const parentDirectory = contextMenu.parentPath || projectPath;
     setContextMenu(null);
 
     setInputDialog({
@@ -538,18 +590,35 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       placeholder: fileToRename.name,
       defaultValue: fileToRename.name,
       onConfirm: async (newName: string) => {
+        if (newName === fileToRename.name) {
+          closeInputDialog();
+          return;
+        }
+        const invalid = validateName(newName);
+        if (invalid) {
+          alert(invalid);
+          return;
+        }
         const path = (window as any).api.path;
         const actualParentPath = path.dirname(fileToRename.path);
         const newPath = path.join(actualParentPath, newName);
 
         const result = await (window as any).api.renamePath(fileToRename.path, newPath);
 
+        closeInputDialog();
         if (result.success) {
-          refreshDirectory(parentDirectory || actualParentPath);
+          const remapped = new Set<string>();
+          expandedPathsRef.current.forEach(expanded => {
+            remapped.add(isSameOrInside(expanded, fileToRename.path)
+              ? newPath + expanded.slice(fileToRename.path.length)
+              : expanded);
+          });
+          expandedPathsRef.current = remapped;
+          onPathRenamed?.(fileToRename.path, newPath);
+          void reloadTree();
         } else {
           alert(`Error renaming: ${result.error}`);
         }
-        setInputDialog({ ...inputDialog, isOpen: false });
       },
     });
   };
@@ -567,6 +636,16 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       }
     } catch (error: any) {
       alert(`Error: ${error.message}`);
+    }
+  };
+
+  const handleOpenWithSystem = async (file?: FileNode | null) => {
+    const target = file ?? contextMenu?.target;
+    setContextMenu(null);
+    if (!target) return;
+    const result = await (window as any).api.openPath(target.path);
+    if (!result?.success) {
+      alert(`Could not open ${target.name}: ${result?.error || 'no application available'}`);
     }
   };
 
@@ -604,42 +683,59 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       return;
     }
 
+    if (isLikelyBinaryFile(file.name)) {
+      await handleOpenWithSystem(file);
+      return;
+    }
+
     onFileSelect(file);
   };
 
+  const renderFileIcon = (node: FileNode) => {
+    if (node.isDirectory) return <FiFolder size={16} />;
+    if (isImageFile(node.name)) return <FiImage size={16} />;
+    const ext = node.name.split('.').pop()?.toLowerCase() ?? '';
+    if (TEXT_EXTENSIONS.has(ext)) return <FiFileText size={16} />;
+    return <FiFile size={16} />;
+  };
+
   const renderFileTree = (nodes: FileNode[], depth: number = 0) => {
-    return nodes.map(node => (
-      <div key={node.path}>
-        <div
-          className={`file-item ${selectedFile?.path === node.path ? 'selected' : ''} ${dragDestination === node.path ? 'drop-target' : ''}`}
-          data-path={node.path}
-          data-is-directory={node.isDirectory}
-          style={{ paddingLeft: `${depth * 16 + 8}px` }}
-          onClick={() => handleFileClick(node)}
-          onDoubleClick={() => handleFileDoubleClick(node)}
-          onContextMenu={e => handleContextMenu(e, node)}
-          onDragOver={event => handleDragOverNode(event, node)}
-          onDragEnter={event => handleDragEnterNode(event, node)}
-          onDragLeave={event => handleDragLeaveNode(event, node)}
-          onDrop={event => handleDropOnNode(event, node)}
-        >
-          {node.isDirectory && (
-            <span className="expand-icon">
-              {node.expanded ? <FiChevronDown size={14} /> : <FiChevronRight size={14} />}
+    return nodes.map(node => {
+      const isActive = Boolean(activeFilePath && !node.isDirectory && samePath(node.path, activeFilePath));
+      return (
+        <div key={node.path}>
+          <div
+            className={`file-item ${selectedFile?.path === node.path ? 'selected' : ''} ${isActive ? 'active-file' : ''} ${dragDestination === node.path ? 'drop-target' : ''}`}
+            data-path={node.path}
+            data-is-directory={node.isDirectory}
+            style={{ paddingLeft: `${depth * 16 + 8}px` }}
+            title={node.path}
+            onClick={() => handleFileClick(node)}
+            onDoubleClick={() => handleFileDoubleClick(node)}
+            onContextMenu={e => handleContextMenu(e, node)}
+            onDragOver={event => handleDragOverNode(event, node)}
+            onDragEnter={event => handleDragEnterNode(event, node)}
+            onDragLeave={event => handleDragLeaveNode(event, node)}
+            onDrop={event => handleDropOnNode(event, node)}
+          >
+            {node.isDirectory && (
+              <span className="expand-icon">
+                {node.expanded ? <FiChevronDown size={14} /> : <FiChevronRight size={14} />}
+              </span>
+            )}
+            <span className="file-icon">
+              {renderFileIcon(node)}
             </span>
-          )}
-          <span className="file-icon">
-            {node.isDirectory ? <FiFolder size={16} /> : <FiFile size={16} />}
-          </span>
-          <span className="file-name">{node.name}</span>
-        </div>
-        {node.isDirectory && node.expanded && node.children && (
-          <div className="file-children">
-            {renderFileTree(node.children, depth + 1)}
+            <span className="file-name">{node.name}</span>
           </div>
-        )}
-      </div>
-    ));
+          {node.isDirectory && node.expanded && node.children && (
+            <div className="file-children">
+              {renderFileTree(node.children, depth + 1)}
+            </div>
+          )}
+        </div>
+      );
+    });
   };
 
   useEffect(() => {
@@ -690,8 +786,17 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
       >
         {files.length === 0 ? (
           <div className="empty-state">
-            <p>No project opened</p>
-            <p className="hint">Click "Open Project" to get started</p>
+            {projectPath && hasLoaded ? (
+              <>
+                <p>This folder is empty</p>
+                <p className="hint">Right-click to create a file, or drop files here</p>
+              </>
+            ) : (
+              <>
+                <p>No project opened</p>
+                <p className="hint">Click "Open Project" to get started</p>
+              </>
+            )}
           </div>
         ) : (
           renderFileTree(files)
@@ -727,7 +832,13 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
               {!contextMenu.target.isDirectory && (
                 <div className="context-menu-item" onClick={handleVersionFreezeFile}>
                   <FiClock size={14} />
-                <span>Instant Backup</span>
+                  <span>Instant Backup</span>
+                </div>
+              )}
+              {!contextMenu.target.isDirectory && (
+                <div className="context-menu-item" onClick={() => handleOpenWithSystem()}>
+                  <FiMonitor size={14} />
+                  <span>Open with Default App</span>
                 </div>
               )}
               <div className="context-menu-item" onClick={handleShowInFileBrowser}>
@@ -754,7 +865,7 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
         placeholder={inputDialog.placeholder}
         defaultValue={inputDialog.defaultValue}
         onConfirm={inputDialog.onConfirm}
-        onCancel={() => setInputDialog({ ...inputDialog, isOpen: false })}
+        onCancel={closeInputDialog}
       />
 
       <ConfirmDialog
@@ -765,7 +876,7 @@ const FileExplorer: React.FC<FileExplorerProps> = ({ onFileSelect, projectPath, 
         cancelLabel="Cancel"
         danger={true}
         onConfirm={confirmDialog.onConfirm}
-        onCancel={() => setConfirmDialog({ ...confirmDialog, isOpen: false })}
+        onCancel={closeConfirmDialog}
       />
       <ImagePreviewDialog
         isOpen={imagePreview.isOpen}

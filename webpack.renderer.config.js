@@ -10,9 +10,9 @@ module.exports = {
   entry: './src/renderer/index.tsx',
   // Avoid Node-style externals in the renderer; we don't use Node APIs here.
   target: 'web',
-  // Enable source maps even for production builds temporarily to help debug
-  // "require is not defined" by identifying the originating module.
-  devtool: 'source-map',
+  // Production builds ship without source maps; they were ~20 MB of the
+  // packaged app and are excluded from packaging as well.
+  devtool: isProduction ? false : 'source-map',
   devServer: {
     port: 3000,
     hot: true,

@@ -1,22 +1,34 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FiX, FiFolder } from 'react-icons/fi';
+import type { ProjectTemplate } from '../utils/projectTemplates';
 import '../styles/NewProjectDialog.css';
 
 interface NewProjectDialogProps {
   isOpen: boolean;
   defaultDirectory: string;
-  onConfirm: (projectName: string, directory: string) => void;
+  templates: ProjectTemplate[];
+  onConfirm: (projectName: string, directory: string, templateId: string) => void;
   onCancel: () => void;
 }
+
+const TEMPLATE_STORAGE_KEY = 'openotex:lastTemplate';
 
 const NewProjectDialog: React.FC<NewProjectDialogProps> = ({
   isOpen,
   defaultDirectory,
+  templates,
   onConfirm,
   onCancel,
 }) => {
   const [projectName, setProjectName] = useState('');
   const [directory, setDirectory] = useState(defaultDirectory);
+  const [templateId, setTemplateId] = useState<string>(() => {
+    try {
+      return localStorage.getItem(TEMPLATE_STORAGE_KEY) || templates[0]?.id || '';
+    } catch {
+      return templates[0]?.id || '';
+    }
+  });
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -28,6 +40,8 @@ const NewProjectDialog: React.FC<NewProjectDialogProps> = ({
   }, [isOpen, defaultDirectory]);
 
   if (!isOpen) return null;
+
+  const selectedTemplate = templates.find(template => template.id === templateId) ?? templates[0];
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,8 +55,10 @@ const NewProjectDialog: React.FC<NewProjectDialogProps> = ({
       alert('Project name contains invalid characters. Please use only letters, numbers, spaces, hyphens, and underscores.');
       return;
     }
-    onConfirm(trimmedName, directory);
-    setProjectName('');
+    try {
+      localStorage.setItem(TEMPLATE_STORAGE_KEY, selectedTemplate.id);
+    } catch {}
+    onConfirm(trimmedName, directory, selectedTemplate.id);
   };
 
   const handleChooseDirectory = async () => {
@@ -66,6 +82,10 @@ const NewProjectDialog: React.FC<NewProjectDialogProps> = ({
     }
   };
 
+  const projectLocation = directory
+    ? (window as any).api.path.join(directory, projectName.trim() || 'ProjectName')
+    : projectName.trim() || 'ProjectName';
+
   return (
     <div className="new-project-dialog-overlay" onClick={onCancel}>
       <div className="new-project-dialog" onClick={(e) => e.stopPropagation()}>
@@ -78,8 +98,9 @@ const NewProjectDialog: React.FC<NewProjectDialogProps> = ({
         <form onSubmit={handleSubmit}>
           <div className="new-project-dialog-body">
             <div className="form-group">
-              <label>Project Name</label>
+              <label htmlFor="new-project-name">Project Name</label>
               <input
+                id="new-project-name"
                 ref={inputRef}
                 type="text"
                 value={projectName}
@@ -87,6 +108,28 @@ const NewProjectDialog: React.FC<NewProjectDialogProps> = ({
                 placeholder="My Research Paper"
                 onKeyDown={handleKeyDown}
               />
+            </div>
+
+            <div className="form-group">
+              <label id="new-project-template">Template</label>
+              <div className="template-grid" role="radiogroup" aria-labelledby="new-project-template">
+                {templates.map(template => {
+                  const selected = template.id === selectedTemplate.id;
+                  return (
+                    <button
+                      key={template.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      className={`template-card ${selected ? 'selected' : ''}`}
+                      onClick={() => setTemplateId(template.id)}
+                    >
+                      <span className="template-name">{template.name}</span>
+                      <span className="template-description">{template.description}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="form-group">
@@ -109,7 +152,7 @@ const NewProjectDialog: React.FC<NewProjectDialogProps> = ({
                 </button>
               </div>
               <div className="directory-hint">
-                Project will be created at: <strong>{directory}/{projectName || 'ProjectName'}</strong>
+                Project will be created at: <strong>{projectLocation}</strong>
               </div>
             </div>
           </div>

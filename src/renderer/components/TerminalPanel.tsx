@@ -14,28 +14,25 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [initialized, setInitialized] = useState<boolean>(false);
+  const [isRunning, setIsRunning] = useState<boolean>(false);
   const [shellName, setShellName] = useState<string>('Git Terminal');
   const outputRef = useRef<HTMLDivElement>(null);
-  const prevProjectPathRef = useRef<string>('');
-  const visibilityRef = useRef<boolean>(isVisible);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const sessionCwdRef = useRef<string>('');
 
   const api = (window as any).api;
 
   useEffect(() => {
-    const handleExit = (_event: any, code: number | null) => {
-      setOutput(prev => prev + `\nProcess exited${code !== null ? ` with code ${code}` : ''}\n`);
-      setInitialized(false);
-      if (visibilityRef.current) {
-        setTimeout(() => {
-          startTerminal();
-        }, 150);
-      }
-    };
-
     const disposeData = api.gitTerminal.onData((data: string) => {
       setOutput(prev => prev + data);
     });
-    const disposeExit = api.gitTerminal.onExit((code: number | null) => handleExit(null as any, code));
+    // Every git command is a separate process; only report failures.
+    const disposeExit = api.gitTerminal.onExit((code: number | null) => {
+      setIsRunning(false);
+      if (code !== null && code !== 0) {
+        setOutput(prev => `${prev}${prev.endsWith('\n') ? '' : '\n'}[exit code ${code}]\n`);
+      }
+    });
 
     return () => {
       disposeData?.();
@@ -44,22 +41,41 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
     };
   }, [api]);
 
+  // Commands always run in the currently open project folder.
   useEffect(() => {
-    visibilityRef.current = isVisible;
-  }, [isVisible]);
+    if (!isVisible && !initialized) {
+      return;
+    }
+    if (initialized && sessionCwdRef.current === projectPath) {
+      return;
+    }
+    let cancelled = false;
+    const start = async () => {
+      const result = await api.gitTerminal.start({
+        cwd: projectPath || undefined,
+      });
+      if (cancelled) return;
+      if (result.success) {
+        const cwd = result.cwd || projectPath;
+        sessionCwdRef.current = projectPath;
+        setInitialized(true);
+        setShellName(result.shell || 'Git Terminal');
+        setOutput(prev => (prev ? `${prev}\n` : '') + `Working directory: ${cwd}\n`);
+      } else {
+        setOutput(prev => `${prev}\nFailed to start terminal: ${result.error}\n`);
+      }
+    };
+    void start();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, initialized, isVisible, projectPath]);
 
   useEffect(() => {
-    if (isVisible && !initialized) {
-      startTerminal();
+    if (isVisible) {
+      window.requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [isVisible]);
-
-  useEffect(() => {
-    if (initialized && projectPath && projectPath !== prevProjectPathRef.current) {
-      // cwd is set when starting the Git Terminal; no need to send cd
-      prevProjectPathRef.current = projectPath;
-    }
-  }, [projectPath, initialized]);
 
   useEffect(() => {
     if (outputRef.current) {
@@ -67,37 +83,24 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
     }
   }, [output]);
 
-  const startTerminal = async () => {
-    const result = await api.gitTerminal.start({
-      cwd: projectPath || undefined,
-    });
-
-    if (result.success) {
-      setInitialized(true);
-      setShellName(result.shell || 'Git Terminal');
-      setOutput(prev => (prev ? `${prev}\n` : '') + `Connected to ${result.shell || 'Git Terminal'}\n`);
-      if (projectPath) {
-        prevProjectPathRef.current = projectPath;
-      }
-    } else {
-      setOutput(prev => `${prev}\nFailed to start terminal: ${result.error}\n`);
-    }
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() || isRunning) return;
 
-    const command = inputValue;
-    setHistory(prev => [...prev, command]);
+    const command = inputValue.trim();
+    setHistory(prev => (prev[prev.length - 1] === command ? prev : [...prev, command]));
     setHistoryIndex(-1);
     setOutput(prev => (prev ? `${prev}\n` : '') + `> ${command}\n`);
     if (!/^git(\s|$)/i.test(command)) {
       setOutput(prev => prev + 'Only git commands are allowed.\n');
       return;
     }
-    await api.gitTerminal.run(command);
     setInputValue('');
+    setIsRunning(true);
+    const result = await api.gitTerminal.run(command);
+    if (!result?.success) {
+      setIsRunning(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -152,15 +155,16 @@ const TerminalPanel: React.FC<TerminalPanelProps> = ({ isVisible, onToggle, proj
         <form className="terminal-input-area" onSubmit={handleSubmit}>
           <span className="prompt-symbol">git$</span>
           <input
+            ref={inputRef}
             type="text"
             value={inputValue}
             onChange={e => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a git command (e.g., git status)"
+            placeholder={isRunning ? 'Running…' : 'Type a git command (e.g., git status)'}
             spellCheck={false}
           />
-          <button type="submit" className="terminal-send-btn">
-            Run
+          <button type="submit" className="terminal-send-btn" disabled={isRunning}>
+            {isRunning ? 'Running' : 'Run'}
           </button>
         </form>
       </div>

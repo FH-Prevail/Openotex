@@ -13,21 +13,22 @@ const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
 const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
 
 const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
-  if (!isOpen) return null;
-
-  // Use static asset path (bundled to dist/assets)
-  const [iconSrc, setIconSrc] = React.useState<string>('assets/openotex-icon.png');
+  // Hooks must run on every render, so the early return comes after them.
+  const iconSrc = 'assets/openotex-icon.png';
   const [isCheckingUpdate, setIsCheckingUpdate] = React.useState(false);
   const [updateStatus, setUpdateStatus] = React.useState<string>('');
   const [checkOnStartup, setCheckOnStartup] = React.useState<boolean>(true);
 
   React.useEffect(() => {
+    if (!isOpen) return;
     // Load user preference for auto-update check
     const savedPreference = localStorage.getItem('checkUpdateOnStartup');
     if (savedPreference !== null) {
       setCheckOnStartup(savedPreference === 'true');
     }
-  }, []);
+  }, [isOpen]);
+
+  if (!isOpen) return null;
 
   const handleCheckOnStartupChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = event.target.checked;
@@ -195,13 +196,14 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
           <div className="about-section">
             <h4>Features</h4>
             <ul>
-              <li>Live preview of LaTeX documents</li>
-              <li>Syntax highlighting and autocomplete</li>
-              <li>Integrated terminal</li>
-              <li>Annotations and comments</li>
-              <li>Auto-save and auto-compile</li>
-              <li>MiKTeX/TinyTeX package management</li>
-              <li>SyncTeX forward &amp; inverse search between editor and PDF</li>
+              <li>Live PDF preview with SyncTeX forward &amp; inverse search</li>
+              <li>Multi-file projects: sub-files compile their main document</li>
+              <li>Autocomplete for commands, environments, labels and citations</li>
+              <li>Unsaved-change protection and per-tab undo history</li>
+              <li>Annotations, comments and Instant Backups</li>
+              <li>Auto-save, auto-compile and latexmk builds</li>
+              <li>MiKTeX/TeX Live package management</li>
+              <li>Git panel and Git terminal</li>
             </ul>
           </div>
 
@@ -211,11 +213,14 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
               <li><kbd>Ctrl</kbd>+<kbd>S</kbd> — Save current file</li>
               <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> — Save all files</li>
               <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> — Compile LaTeX</li>
-              <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> — Create version freeze</li>
+              <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>V</kbd> — Instant Backup of the current file</li>
+              <li><kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>O</kbd> — New / open project</li>
+              <li><kbd>Ctrl</kbd>+<kbd>/</kbd> — Toggle line comment</li>
               <li><kbd>Ctrl</kbd>+<kbd>`</kbd> — Toggle terminal</li>
               <li><kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>J</kbd> — SyncTeX forward search (editor → PDF)</li>
               <li>Right-click in the editor and choose <strong>Highlight in PDF</strong> — SyncTeX forward search</li>
               <li><kbd>Ctrl</kbd>+<kbd>Click</kbd> in PDF — SyncTeX inverse search (PDF → editor)</li>
+              <li><kbd>Ctrl</kbd>+<kbd>Wheel</kbd> over the PDF — Zoom the preview</li>
             </ul>
           </div>
 

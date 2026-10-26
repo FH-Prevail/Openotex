@@ -171,3 +171,8 @@
 
 
 
+
+/* Pages that are not rendered yet show as blank paper of the right size */
+.pdf-page-wrapper {
+  background-color: #ffffff;
+}

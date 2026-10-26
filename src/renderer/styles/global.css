@@ -33,6 +33,8 @@
   --color-danger-text-hover: #ff9a9a;
   --color-scrollbar-thumb: #3c3c3c;
   --color-scrollbar-track: #202020;
+  --color-warning-text: #f6c56f;
+  --color-warning-bg: rgba(245, 158, 11, 0.12);
 }
 
 :root[data-theme='dark'] {
@@ -70,6 +72,8 @@
   --color-danger-text-hover: #ff9a9a;
   --color-scrollbar-thumb: #3c3c3c;
   --color-scrollbar-track: #202020;
+  --color-warning-text: #f6c56f;
+  --color-warning-bg: rgba(245, 158, 11, 0.12);
 }
 
 :root[data-theme='light'] {
@@ -107,6 +111,8 @@
   --color-danger-text-hover: #962c22;
   --color-scrollbar-thumb: #c5c9d2;
   --color-scrollbar-track: #eceff4;
+  --color-warning-text: #8a5a00;
+  --color-warning-bg: rgba(217, 119, 6, 0.12);
 }
 
 @media (prefers-color-scheme: light) {
@@ -144,6 +150,8 @@
     --color-danger-text-hover: #962c22;
     --color-scrollbar-thumb: #c5c9d2;
     --color-scrollbar-track: #eceff4;
+    --color-warning-text: #8a5a00;
+    --color-warning-bg: rgba(217, 119, 6, 0.12);
   }
 }
 

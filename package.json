@@ -1,8 +1,13 @@
 {
   "name": "openotex",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "A modern, open-source LaTeX editor for desktop",
   "main": "dist/main.js",
+  "homepage": "https://openotex.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FH-Prevail/Openotex.git"
+  },
   "scripts": {
     "start": "cross-env NODE_ENV=development electron .",
     "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:main\" \"npm run dev:preload\" \"npm run dev:electron\"",
@@ -10,13 +15,17 @@
     "dev:main": "webpack --config webpack.main.config.js --watch",
     "dev:preload": "webpack --config webpack.preload.config.js --watch",
     "dev:electron": "wait-on -t 120000 http-get://localhost:3000 && cross-env NODE_ENV=development electron .",
-    "build": "npm run build:main && npm run build:renderer && npm run build:preload",
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && npm run build:main && npm run build:renderer && npm run build:preload && npm run build:mcp",
     "build:main": "cross-env NODE_ENV=production webpack --config webpack.main.config.js",
     "build:renderer": "cross-env NODE_ENV=production webpack --config webpack.renderer.config.js",
     "build:preload": "cross-env NODE_ENV=production webpack --config webpack.preload.config.js",
-    "test": "npm run test:diagnostics",
-    "test:diagnostics": "tsc -p tsconfig.test.json && node .test-dist/tests/latexDiagnostics.test.js",
-    "package": "npm run build && electron-builder"
+    "build:mcp": "cross-env NODE_ENV=production webpack --config webpack.mcp.config.js",
+    "test": "tsc -p tsconfig.test.json && node .test-dist/tests/latexDiagnostics.test.js && node .test-dist/tests/latexProject.test.js",
+    "package": "npm run build && electron-builder --win --publish never",
+    "package:win": "npm run build && electron-builder --win --publish never",
+    "package:linux": "npm run build && electron-builder --linux --publish never",
+    "package:all": "npm run build && electron-builder --win --linux --publish never"
   },
   "keywords": [
     "latex",
@@ -27,17 +36,31 @@
   "author": "Openotex Team",
   "license": "MIT",
   "devDependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "@types/d3": "^7.4.3",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.10.0",
     "@types/react": "^18.2.42",
     "@types/react-dom": "^18.2.17",
+    "chokidar": "^4.0.3",
     "concurrently": "^8.2.2",
     "copy-webpack-plugin": "^13.0.1",
     "cross-env": "^10.1.0",
     "css-loader": "^6.8.1",
+    "d3": "^7.9.0",
     "electron": "^28.0.0",
     "electron-builder": "^24.9.1",
     "html-webpack-plugin": "^5.5.4",
+    "js-yaml": "^4.1.0",
+    "jszip": "^3.10.1",
+    "monaco-editor": "^0.54.0",
     "monaco-editor-webpack-plugin": "^7.1.1",
+    "pdfjs-dist": "^3.11.174",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-icons": "^4.12.0",
+    "react-markdown": "^10.1.0",
+    "react-split": "^2.0.14",
     "style-loader": "^3.3.3",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.3",
@@ -46,47 +69,61 @@
     "webpack-cli": "^5.1.4",
     "webpack-dev-server": "^4.15.1"
   },
-  "dependencies": {
-    "@monaco-editor/react": "^4.6.0",
-    "@types/d3": "^7.4.3",
-    "@types/js-yaml": "^4.0.9",
-    "chokidar": "^4.0.3",
-    "d3": "^7.9.0",
-    "html2pdf.js": "^0.12.1",
-    "js-yaml": "^4.1.0",
-    "jszip": "^3.10.1",
-    "latex.js": "^0.12.6",
-    "mathjax-full": "^3.2.1",
-    "monaco-editor": "^0.54.0",
-    "pdfjs-dist": "^3.11.174",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-icons": "^4.12.0",
-    "react-markdown": "^10.1.0",
-    "react-pdf": "^7.6.0",
-    "react-resizable-panels": "^1.0.9",
-    "react-split": "^2.0.14"
-  },
   "build": {
     "appId": "com.openotex.app",
     "productName": "Openotex",
+    "copyright": "© 2026 Openotex team",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
+      "!dist/**/*.map",
       "assets/**/*"
     ],
     "win": {
-      "target": "nsis",
-      "icon": "assets/openotex-icon.png"
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/openotex-icon.png",
+      "artifactName": "Openotex-${version}-win-x64.${ext}"
+    },
+    "nsis": {
+      "artifactName": "Openotex-Setup-${version}.${ext}"
     },
     "mac": {
       "icon": "assets/openotex-icon.png"
     },
     "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "assets/openotex-icon.png",
-      "target": "AppImage"
+      "category": "Office",
+      "executableName": "openotex",
+      "synopsis": "A modern, open-source LaTeX editor",
+      "description": "Openotex is a desktop LaTeX editor with live PDF preview, SyncTeX navigation, multi-file projects and Git integration.",
+      "artifactName": "Openotex-${version}-x86_64.${ext}",
+      "desktop": {
+        "StartupWMClass": "Openotex",
+        "Keywords": "latex;tex;editor;pdf;"
+      }
     }
   }
 }

@@ -205,3 +205,8 @@
   outline-offset: -4px;
 }
 
+
+.file-item.active-file .file-name {
+  color: var(--color-accent);
+  font-weight: 600;
+}

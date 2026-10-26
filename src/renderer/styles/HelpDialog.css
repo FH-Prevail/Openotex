@@ -229,3 +229,13 @@
 }
 
 
+
+.help-info code,
+.help-list code,
+.shortcut-item code {
+  font-family: 'Monaco', 'Consolas', monospace;
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background-color: var(--color-surface-alt);
+}

@@ -1,3 +1,5 @@
+import { stripLatexComments } from '../../shared/latexProject';
+
 export interface StructureNode {
   id: string;
   title: string;
@@ -68,50 +70,47 @@ export function parseLatexStructure(content: string): ParseResult {
   const stack: StructureNode[] = [root];
   let nodeIdCounter = 0;
 
-  // Regex patterns for different levels
-  const patterns = [
-    { regex: /\\chapter\{([^}]+)\}/,         type: 'chapter' as const,        level: 1 },
-    { regex: /\\section\{([^}]+)\}/,         type: 'section' as const,        level: 2 },
-    { regex: /\\subsection\{([^}]+)\}/,      type: 'subsection' as const,     level: 3 },
-    { regex: /\\subsubsection\{([^}]+)\}/,   type: 'subsubsection' as const,  level: 4 }
-  ];
+  // \part sits above chapters; it is drawn like a chapter node.
+  const levels: Record<string, { type: StructureNode['type']; level: number }> = {
+    part: { type: 'chapter', level: 0.5 },
+    chapter: { type: 'chapter', level: 1 },
+    section: { type: 'section', level: 2 },
+    subsection: { type: 'subsection', level: 3 },
+    subsubsection: { type: 'subsubsection', level: 4 },
+  };
+  // Matches \section, \section*, \section[short title] and so on.
+  const headingPattern = /\\(part|chapter|section|subsection|subsubsection)\*?\s*(?:\[[^\]]*\])?\s*\{/g;
 
-  lines.forEach((line, lineIndex) => {
-    const trimmedLine = line.trim();
-
-    // Skip comments
-    if (trimmedLine.startsWith('%')) {
-      return;
-    }
-
-    // Check each pattern
-    for (const pattern of patterns) {
-      const match = trimmedLine.match(pattern.regex);
-      if (match) {
-        const title = cleanLatexText(match[1]);
-        const node: StructureNode = {
-          id: `node-${nodeIdCounter++}`,
-          title,
-          level: pattern.level,
-          type: pattern.type,
-          children: [],
-          lineNumber: lineIndex + 1
-        };
-
-        // Find the correct parent in the stack
-        while (stack.length > 0 && stack[stack.length - 1].level >= pattern.level) {
-          stack.pop();
-        }
-
-        // Add to parent
-        if (stack.length > 0) {
-          stack[stack.length - 1].children.push(node);
-        }
-
-        // Push current node to stack
-        stack.push(node);
-        break;
+  stripLatexComments(content).split('\n').forEach((line, lineIndex) => {
+    headingPattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = headingPattern.exec(line)) !== null) {
+      const heading = levels[match[1]];
+      const rawTitle = readBracedArgument(line, headingPattern.lastIndex);
+      if (!heading || rawTitle === null) {
+        continue;
       }
+      const node: StructureNode = {
+        id: `node-${nodeIdCounter++}`,
+        title: cleanLatexText(rawTitle) || '(untitled)',
+        level: heading.level,
+        type: heading.type,
+        children: [],
+        lineNumber: lineIndex + 1
+      };
+
+      // Find the correct parent in the stack
+      while (stack.length > 0 && stack[stack.length - 1].level >= heading.level) {
+        stack.pop();
+      }
+
+      // Add to parent
+      if (stack.length > 0) {
+        stack[stack.length - 1].children.push(node);
+      }
+
+      // Push current node to stack
+      stack.push(node);
     }
   });
 
@@ -128,6 +127,27 @@ export function parseLatexStructure(content: string): ParseResult {
     isValid: true,
     structure: root
   };
+}
+
+// Read a balanced {...} argument whose content starts at `start` (just after
+// the opening brace). Returns null when the brace is not closed on the line.
+function readBracedArgument(line: string, start: number): string | null {
+  let depth = 1;
+  for (let i = start; i < line.length; i++) {
+    const char = line[i];
+    if (char === '\\') {
+      i++;
+      continue;
+    }
+    if (char === '{') depth++;
+    if (char === '}') {
+      depth--;
+      if (depth === 0) {
+        return line.slice(start, i);
+      }
+    }
+  }
+  return null;
 }
 
 /**

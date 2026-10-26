@@ -7,6 +7,8 @@
   },
   "include": [
     "src/shared/**/*.ts",
+    "src/renderer/utils/latexStructureParser.ts",
+    "src/renderer/utils/projectTemplates.ts",
     "tests/**/*.ts"
   ]
 }

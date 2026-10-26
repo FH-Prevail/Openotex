@@ -88,3 +88,32 @@
 }
 
 
+
+/* Unsaved changes: a dot replaces the close icon until hovered */
+.tab-dirty-dot {
+  display: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--color-text-secondary);
+}
+
+.tab.dirty .tab-close {
+  opacity: 1;
+}
+
+.tab.dirty .tab-dirty-dot {
+  display: block;
+}
+
+.tab.dirty .tab-close-icon {
+  display: none;
+}
+
+.tab.dirty .tab-close:hover .tab-dirty-dot {
+  display: none;
+}
+
+.tab.dirty .tab-close:hover .tab-close-icon {
+  display: block;
+}

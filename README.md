@@ -6,14 +6,14 @@
 
 **A modern, open-source LaTeX editor for desktop**
 
-Version 1.5.0 (Zlin Edition)
+Version 1.6.0 (Steyr Edition)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Electron](https://img.shields.io/badge/Electron-28.0.0-blue.svg)](https://www.electronjs.org/)
-[![React](https://img.shields.io/badge/React-18.2.0-blue.svg)](https://reactjs.org/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.3.3-blue.svg)](https://www.typescriptlang.org/)
+[![Electron](https://img.shields.io/badge/Electron-28-blue.svg)](https://www.electronjs.org/)
+[![React](https://img.shields.io/badge/React-18-blue.svg)](https://reactjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue.svg)](https://www.typescriptlang.org/)
 
-[Features](#features) • [Installation](#installation) • [Usage](#usage) • [Development](#development) • [Contributing](#contributing) • [License](#license)
+[Features](#features) • [Installation](#installation) • [Coding agents (MCP)](#use-openotex-from-a-coding-agent-mcp) • [Usage](#usage) • [Development](#development) • [Contributing](#contributing) • [License](#license)
 
 </div>
 
@@ -21,24 +21,29 @@ Version 1.5.0 (Zlin Edition)
 
 ## Overview
 
-Openotex is a clean, modern LaTeX editor built with Electron, React, and TypeScript. It provides a powerful yet intuitive interface for creating and editing LaTeX documents with live preview, syntax highlighting, and advanced features like annotations and version control.
+Openotex is a clean, modern LaTeX editor built with Electron, React, and TypeScript. It provides a powerful yet intuitive interface for creating and editing LaTeX documents with live preview, syntax highlighting, and advanced features like annotations, Git integration, and a built-in server for AI coding agents.
 
 ## Features
 
 ✨ **Core Features:**
-- 📝 Live LaTeX preview with real-time compilation
-- 🎨 Syntax highlighting and autocomplete powered by Monaco Editor
+- 📝 Live PDF preview with SyncTeX navigation in both directions
+- 📚 Multi-file projects: compiling a chapter builds its main document (`% !TEX root` supported)
+- 🎨 Syntax highlighting and autocomplete for commands, environments, `\ref` labels and `\cite` keys
 - 📁 Project-based file management with tree view
-- 🔄 Auto-save and auto-compile functionality
+- 🔄 Auto-save, auto-compile and incremental `latexmk` builds
+- ⚠️ Clickable errors and warnings that open the right file and line
 - 📊 Structure map for easy document navigation
-- 🖥️ Integrated terminal for LaTeX commands
+- 🖥️ Git panel and Git terminal
 
 🛠️ **Advanced Features:**
+- 🤖 MCP server so Claude Code, Claude Desktop, Cursor, VS Code or Codex can compile, check and open your documents
+- 🛡️ Unsaved-change protection, per-tab undo history, and reload of files changed outside Openotex
 - ✍️ Annotations and comments with color-coded highlights
-- 📌 Version freeze for creating document snapshots
-- 🔧 Automatic LaTeX package installation (MiKTeX/TinyTeX)
+- 📌 Instant Backup snapshots of a file
+- 🔧 Automatic LaTeX package installation (MiKTeX / TeX Live)
+- 🧩 New-project templates (article, report/thesis, Beamer presentation, blank)
 - 🌓 Dark/Light theme support with system preference detection
-- 💾 Session persistence (remembers open files and cursor positions)
+- 💾 Session and window persistence
 - 🗜️ Export projects as ZIP archives
 - 🔄 Automatic update checking
 
@@ -49,16 +54,28 @@ Openotex is a clean, modern LaTeX editor built with Electron, React, and TypeScr
 
 ## Installation
 
-### Download Installer (Recommended)
+### Download (Recommended)
 
-The easiest way to install Openotex is to download the installer from the official website:
+Download Openotex from the official website:
 
-**🌐 [openotex.com](https://openotex.com)**
+**🌐 [openotex.com](https://openotex.com/#download)**
 
-**Currently available for:**
-- ✅ Windows (`.exe` installer)
+| Platform | Package | Notes |
+|----------|---------|-------|
+| Windows 10/11 (x64) | `Openotex-Setup-1.6.0.exe` | Installer with Start menu entry |
+| Windows 10/11 (x64) | `Openotex-1.6.0-win-x64.zip` | Portable: extract and run `Openotex.exe` |
+| Linux (x86_64) | `Openotex-1.6.0-x86_64.AppImage` | Single file, no installation |
 
-*macOS and Linux versions coming soon!*
+**Linux AppImage:**
+
+```bash
+chmod +x Openotex-1.6.0-x86_64.AppImage
+./Openotex-1.6.0-x86_64.AppImage
+```
+
+On distributions that restrict unprivileged user namespaces (for example Ubuntu 24.04 and newer), start it with `--no-sandbox` if it does not open. Some systems also need FUSE 2 (`sudo apt install libfuse2t64` on Ubuntu 24.04, `libfuse2` on older releases).
+
+A LaTeX distribution is required: MiKTeX or TeX Live on Windows, TeX Live on Linux (`sudo apt install texlive-full latexmk`), MacTeX on macOS. `latexmk` is recommended.
 
 ### Building from Source
 
@@ -70,8 +87,8 @@ For the complete build, test, packaging, and LaTeX output notes, see [BUILDING.m
 
 Before you begin, make sure you have these installed on your computer:
 
-- **Node.js** (version 18 or higher) - [Download here](https://nodejs.org/)
-- **npm** (comes with Node.js) or **yarn**
+- **Node.js** (version 20 or higher) - [Download here](https://nodejs.org/)
+- **npm** (comes with Node.js)
 - **Git** - [Download here](https://git-scm.com/)
 - **LaTeX distribution** - Required for compiling LaTeX documents:
   - Windows: [MiKTeX](https://miktex.org/download) or [TinyTeX](https://yihui.org/tinytex/)
@@ -82,62 +99,42 @@ Before you begin, make sure you have these installed on your computer:
 
 **1. Clone the repository**
 
-Open your terminal/command prompt and run:
 ```bash
 git clone https://github.com/FH-Prevail/Openotex.git
 cd Openotex
 ```
 
-This downloads the source code to your computer.
-
 **2. Install dependencies**
 
-Install all required Node.js packages:
 ```bash
 npm install
 ```
 
-This will download and install all dependencies listed in `package.json`. It may take a few minutes.
+**3. Run in development mode**
 
-**3. Run in development mode (recommended for testing)**
-
-Start the development server with hot-reload:
 ```bash
 npm run dev
 ```
 
-This will:
-- Start a webpack dev server on port 3000
-- Launch Electron with the application
-- Enable hot-reload (changes reflect immediately)
+This starts a webpack dev server on port 3000 and launches Electron with hot reload.
 
-The application should open automatically. You can now test and modify the code!
+**4. Build for production**
 
-**4. Build for production (create distributable app)**
-
-To create a production build:
 ```bash
-# Build the source code
-npm run build
-
-# Package the application for distribution
-npm run package
+npm run build           # compile main, renderer, preload and MCP server into dist/
+npm run package         # Windows installer + portable ZIP in release/
+npm run package:linux   # Linux AppImage in release/ (see BUILDING.md)
 ```
-
-This creates:
-- `dist/` folder with compiled code
-- `release/` folder with the installer for your platform (.exe for Windows, .dmg for macOS, etc.)
 
 #### Available Scripts
 
 - `npm run dev` - Start development server with hot-reload
-- `npm run dev:renderer` - Start only the renderer webpack dev server
-- `npm run dev:main` - Build main process in watch mode
-- `npm run build` - Build for production
-- `npm run build:main` - Build only the main process
-- `npm run build:renderer` - Build only the renderer process
-- `npm test` - Run diagnostic parser tests
-- `npm run package` - Create distributable packages
+- `npm run build` - Clean `dist/` and build for production
+- `npm run build:main` / `build:renderer` / `build:preload` / `build:mcp` - Build one part
+- `npm test` - Run the LaTeX diagnostics and project-analysis tests
+- `npm run package` / `package:win` - Windows installer and ZIP
+- `npm run package:linux` - Linux AppImage
+- `npm run package:all` - Windows and Linux packages
 
 #### Troubleshooting
 
@@ -148,12 +145,28 @@ This creates:
 - Stop other applications using port 3000, or modify the port in `webpack.renderer.config.js`
 
 **LaTeX compilation errors:**
-- Ensure your LaTeX distribution is properly installed and in your system PATH
+- Ensure your LaTeX distribution is installed. Openotex also looks in the standard MiKTeX, TeX Live, MacTeX and TinyTeX folders, so a fresh install is usually found without a restart (use "check again" in the preview).
 - Try running `pdflatex --version` to verify installation
 
 **Build errors:**
 - Delete `node_modules` folder and run `npm install` again
 - Clear npm cache: `npm cache clean --force`
+
+## Use Openotex from a coding agent (MCP)
+
+Openotex ships a [Model Context Protocol](https://modelcontextprotocol.io) server. Connect it to your AI coding agent and the agent can compile your document, read the errors with file and line, check references, and show files in the Openotex window while you watch the PDF update.
+
+1. Start Openotex once (it installs the server script).
+2. Open **Help → Connect a Coding Agent (MCP)…**.
+3. Copy the ready-made setup for **Claude Code**, **Claude Desktop / Cursor**, **VS Code** or **Codex CLI**.
+
+For Claude Code the command looks like this (paths are filled in for your computer):
+
+```bash
+claude mcp add --transport stdio --scope user openotex --env ELECTRON_RUN_AS_NODE=1 --env "OPENOTEX_APP=C:\Users\you\AppData\Local\Programs\Openotex\Openotex.exe" -- "C:\Users\you\AppData\Local\Programs\Openotex\Openotex.exe" "C:\Users\you\AppData\Roaming\openotex\mcp\openotex-mcp.cjs"
+```
+
+The Openotex executable runs the server itself (`ELECTRON_RUN_AS_NODE=1`), so no separate Node.js is needed. Tools: `compile_document`, `check_references`, `get_document_outline`, `find_root_document`, `list_labels_and_citations`, `source_to_pdf`, `pdf_to_source`, `open_in_openotex`, `get_latex_environment`. See [docs/MCP.md](docs/MCP.md) for details.
 
 ## Usage
 
@@ -161,8 +174,8 @@ This creates:
 
 1. **Create a New Project:**
    - Click `File > New Project` or press `Ctrl+N`
-   - Choose a project name and location
-   - A basic LaTeX template will be created
+   - Choose a name, a template (Article, Report/Thesis, Presentation, Blank) and a location
+   - Openotex never writes a template into a folder that already contains files
 
 2. **Open an Existing Project:**
    - Click `File > Open Project` or press `Ctrl+O`
@@ -170,25 +183,32 @@ This creates:
 
 3. **Edit and Compile:**
    - Edit your `.tex` files in the Monaco editor
-   - Preview updates automatically with auto-compile enabled
-   - Or manually compile with `Ctrl+Shift+C`
+   - With Auto Save on, the PDF updates about 2.5 seconds after you stop typing
+   - With Auto Save off, the document compiles when you save; `Ctrl+Shift+C` saves and compiles
 
 ### Key Features
+
+#### Multi-file projects
+- Split documents with `\input`, `\include`, `\subfile` or `\import`
+- Compiling a chapter file builds the main document that includes it
+- Override the main file with `% !TEX root = main.tex` at the top of a chapter
 
 #### Annotations
 - Select text and click the highlight button to add colored annotations
 - Add comments to your highlights for collaborative work
 - Annotations are saved in `.metadata` files alongside your LaTeX files
 
-#### Version Freeze
-- Create snapshots of your documents with `Ctrl+Shift+V`
-- Versions are saved in `filename_timeline_` folders
-- Useful for tracking document evolution or creating backups
+#### Instant Backup
+- Create a snapshot of the current file with `Ctrl+Shift+V`
+- Snapshots are saved in a `<file>_backups_` folder next to the file
 
 #### Structure Map
-- View document structure (sections, subsections, etc.)
+- View document structure (parts, chapters, sections, subsections)
 - Click on any section to jump to it in the editor
 - Toggle with the structure map button in the toolbar
+
+#### Build output
+- With `latexmk`, auxiliary files and the PDF are written to `.openotex/build/<document>/`; use **Export PDF** to save a copy anywhere
 
 ### Keyboard Shortcuts
 
@@ -199,8 +219,12 @@ This creates:
 | `Ctrl+S` | Save Current File |
 | `Ctrl+Shift+S` | Save All Files |
 | `Ctrl+Shift+C` | Compile Document |
-| `Ctrl+Shift+V` | Version Freeze |
-| ``Ctrl+` `` | Toggle Terminal |
+| `Ctrl+Shift+V` | Instant Backup |
+| `Ctrl+/` | Toggle Line Comment |
+| `Ctrl+Alt+J` | Show the cursor position in the PDF |
+| `Ctrl+Click` on the PDF | Jump to the source line |
+| `Ctrl+Wheel` on the PDF | Zoom the preview |
+| ``Ctrl+` `` | Toggle Git Terminal |
 | `Ctrl+F` | Find |
 | `Ctrl+H` | Find & Replace |
 
@@ -212,54 +236,31 @@ This creates:
 Openotex/
 ├── src/
 │   ├── main/              # Electron main process
+│   │   ├── main.ts        # Windows, IPC, file system, Git
+│   │   ├── latexService.ts # LaTeX compilation, root detection, SyncTeX (no Electron)
+│   │   └── preload.ts     # Renderer API bridge
+│   ├── mcp/server.ts      # MCP server for coding agents (stdio)
+│   ├── shared/            # Pure helpers shared by main, renderer, MCP and tests
 │   ├── renderer/          # React renderer process
 │   │   ├── components/    # React components
 │   │   ├── styles/        # CSS stylesheets
 │   │   └── App.tsx        # Main app component
 │   └── types/             # TypeScript type definitions
+├── tests/                 # Unit tests (npm test)
 ├── assets/                # Application assets (icons, etc.)
-├── webpack.main.config.js # Webpack config for main process
-├── webpack.renderer.config.js # Webpack config for renderer
+├── webpack.*.config.js    # Webpack configs (main, renderer, preload, mcp)
 └── package.json
 ```
 
 ### Tech Stack
 
-- **Framework:** Electron 28.0.0
-- **UI Library:** React 18.2.0
-- **Language:** TypeScript 5.3.3
-- **Editor:** Monaco Editor 0.54.0
+- **Framework:** Electron 28
+- **UI Library:** React 18
+- **Language:** TypeScript 5
+- **Editor:** Monaco Editor 0.54
+- **PDF rendering:** pdf.js 3
 - **Build Tool:** Webpack 5
-- **Bundler:** electron-builder
-
-### Building
-
-Development build:
-```bash
-npm run dev
-```
-
-Production build:
-```bash
-npm run build
-```
-
-Package for distribution:
-```bash
-npm run package
-```
-
-### Scripts
-
-- `npm run dev` - Start development server with hot reload
-- `npm run dev:renderer` - Start renderer webpack dev server
-- `npm run dev:main` - Build main process in watch mode
-- `npm run dev:electron` - Start Electron in development mode
-- `npm run build` - Build for production
-- `npm run build:main` - Build main process
-- `npm run build:renderer` - Build renderer process
-- `npm test` - Run diagnostic parser tests
-- `npm run package` - Create distributable packages
+- **Packaging:** electron-builder (NSIS, ZIP, AppImage)
 
 ## Contributing
 
@@ -282,13 +283,13 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Built with [Electron](https://www.electronjs.org/)
 - Editor powered by [Monaco Editor](https://microsoft.github.io/monaco-editor/)
+- PDF rendering by [pdf.js](https://mozilla.github.io/pdf.js/)
 - Icons from [React Icons](https://react-icons.github.io/react-icons/)
 
 ## Support
 
 - **Website:** [openotex.com](https://openotex.com)
 - **Issues:** [GitHub Issues](https://github.com/FH-Prevail/Openotex/issues)
-- **Documentation:** [Wiki](https://github.com/FH-Prevail/Openotex/wiki)
 
 ## Disclaimer
 
@@ -300,6 +301,6 @@ This application is **free to use** and comes with **no warranty**. The software
 
 **Made with ❤️ by the Openotex Team**
 
-© 2025 Openotex Team
+© 2026 Openotex Team
 
 </div>

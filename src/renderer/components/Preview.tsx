@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, forwardRef, useImperativeHandle } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { FiRefreshCw, FiZoomIn, FiZoomOut, FiDownload, FiAlertCircle, FiHelpCircle } from 'react-icons/fi';
+import {
+  FiRefreshCw,
+  FiZoomIn,
+  FiZoomOut,
+  FiDownload,
+  FiAlertCircle,
+  FiAlertTriangle,
+  FiHelpCircle,
+  FiMaximize2,
+  FiExternalLink,
+  FiChevronDown,
+  FiChevronRight,
+} from 'react-icons/fi';
 import * as pdfjsLib from 'pdfjs-dist';
-import type { PDFDocumentProxy } from 'pdfjs-dist';
+import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 import NotificationDialog from './NotificationDialog';
 import type { LatexDiagnostic } from '../../shared/latexDiagnostics';
 import '../styles/Preview.css';
@@ -13,6 +25,23 @@ import '../styles/Preview-addon.css';
 
 type SynctexRect = { page: number; h: number; v: number; W: number; H: number };
 
+// One placeholder per PDF page. Canvases are only created for pages near the
+// visible area and released again when scrolled far away, so long documents
+// do not hold hundreds of full-resolution bitmaps.
+type PageSlot = {
+  pageNum: number;
+  wrapper: HTMLDivElement;
+  rendered: boolean;
+  rendering: boolean;
+  task: RenderTask | null;
+};
+
+const MIN_ZOOM = 25;
+const MAX_ZOOM = 400;
+const ZOOM_STORAGE_KEY = 'openotex:pdfZoom';
+
+const clampZoom = (value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(value)));
+
 export interface PreviewHandle {
   forwardSearch: (line: number, column?: number) => Promise<void>;
 }
@@ -22,28 +51,46 @@ interface PreviewProps {
   compileNonce: number;
   currentFileExtension: string | null;
   currentFilePath: string | null;
+  projectPath?: string;
   latexEngine?: 'pdflatex' | 'xelatex' | 'lualatex';
+  beforeCompile?: (explicit?: boolean) => Promise<void>;
   onMissingPackages?: (packages: string[]) => void;
   onSyncTexJump?: (target: { file: string; line: number; column: number }) => void;
 }
+
+const fileNameOf = (filePath: string) => filePath.split(/[\\/]/).pop() || filePath;
+const dirNameOf = (filePath: string) => filePath.replace(/[\\/][^\\/]*$/, '');
 
 const Preview = forwardRef<PreviewHandle, PreviewProps>(({
   content,
   compileNonce,
   currentFileExtension,
   currentFilePath,
+  projectPath,
   latexEngine = 'pdflatex',
+  beforeCompile,
   onMissingPackages,
   onSyncTexJump,
 }, ref) => {
   const [pdfData, setPdfData] = useState<string>('');
   const [pdfPath, setPdfPath] = useState<string>('');
+  const [rootFile, setRootFile] = useState<string>('');
   const [isCompiling, setIsCompiling] = useState(false);
   const [compilationStatus, setCompilationStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
+  // 'info' when the file is not a compilable document (not a LaTeX error).
+  const [errorKind, setErrorKind] = useState<'error' | 'info'>('error');
   const [compilationLog, setCompilationLog] = useState<string>('');
   const [diagnostics, setDiagnostics] = useState<LatexDiagnostic[]>([]);
-  const [zoom, setZoom] = useState(100);
+  const [showWarnings, setShowWarnings] = useState(false);
+  const [zoom, setZoom] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem(ZOOM_STORAGE_KEY));
+      return Number.isFinite(saved) && saved > 0 ? clampZoom(saved) : 100;
+    } catch {
+      return 100;
+    }
+  });
   const [latexInstalled, setLatexInstalled] = useState<boolean | null>(null);
   const [latexVersion, setLatexVersion] = useState<string>('');
   const [notification, setNotification] = useState<{
@@ -62,7 +109,7 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
     () => (currentFileExtension ? currentFileExtension.toLowerCase() : ''),
     [currentFileExtension]
   );
-  const isLatexFile = fileExtension === 'tex' || fileExtension === 'latex';
+  const isLatexFile = fileExtension === 'tex' || fileExtension === 'latex' || fileExtension === 'ltx';
   const isMarkdownFile = fileExtension === 'md' || fileExtension === 'markdown';
   const engineSuggestion = useMemo(() => {
     if (!isLatexFile || latexEngine === 'pdflatex') return '';
@@ -72,8 +119,14 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
     return '';
   }, [content, isLatexFile, latexEngine]);
 
+  const warningDiagnostics = useMemo(
+    () => (error ? [] : diagnostics.filter(diagnostic => diagnostic.severity !== 'info')),
+    [diagnostics, error]
+  );
+
   const latestCompileRequestRef = useRef(0);
-  const lastSuccessfulSourcePathRef = useRef<string | null>(null);
+  // Root document of the PDF currently shown (the compiled main file).
+  const lastSuccessfulRootRef = useRef<string | null>(null);
 
   // pdfjs state
   const pdfDocRef = useRef<PDFDocumentProxy | null>(null);
@@ -87,14 +140,27 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
   const prevZoomRef = useRef(zoom);
   // SyncTeX: per-page wrapper elements, indexed by pageNum (1-based).
   const pageWrappersRef = useRef<Array<HTMLDivElement | null>>([]);
+  const slotsRef = useRef<PageSlot[]>([]);
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  // Width of page 1 at 100%, used by "fit width".
+  const baseWidthRef = useRef(0);
   // Mirror of the current zoom so imperative handle doesn't need stale closures.
   const zoomRef = useRef(zoom);
-  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+  useEffect(() => {
+    zoomRef.current = zoom;
+    try {
+      localStorage.setItem(ZOOM_STORAGE_KEY, String(zoom));
+    } catch {}
+  }, [zoom]);
   // Most-recent pdfPath, used inside click handlers.
   const pdfPathRef = useRef(pdfPath);
   useEffect(() => { pdfPathRef.current = pdfPath; }, [pdfPath]);
+  const rootFileRef = useRef(rootFile);
+  useEffect(() => { rootFileRef.current = rootFile; }, [rootFile]);
   const onSyncTexJumpRef = useRef(onSyncTexJump);
   useEffect(() => { onSyncTexJumpRef.current = onSyncTexJump; }, [onSyncTexJump]);
+  const beforeCompileRef = useRef(beforeCompile);
+  useEffect(() => { beforeCompileRef.current = beforeCompile; }, [beforeCompile]);
 
   useEffect(() => {
     checkLatexInstallation();
@@ -105,8 +171,6 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
       setCompilationStatus(status.message);
       if (status.stage === 'font-installation' || status.stage === 'package-installation') {
         setNotification({ isOpen: true, title: 'Installing Dependencies', message: status.message, type: 'info' });
-      } else if (status.stage === 'retry') {
-        setNotification({ isOpen: true, title: 'Retrying Compilation', message: status.message, type: 'success' });
       }
     });
     return () => { dispose?.(); };
@@ -145,68 +209,141 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
     return Array.from(packages);
   };
 
-  // Render all pages of `doc` at the given zoom level into containerRef.
-  // Saves the current scroll position before clearing, then restores it after
-  // all pages are appended so the user's reading position is preserved.
-  const renderAllPages = useCallback(async (doc: PDFDocumentProxy, zoomLevel: number) => {
-    if (!containerRef.current) return;
+  const releaseSlot = (slot: PageSlot) => {
+    slot.task?.cancel();
+    slot.task = null;
+    slot.wrapper.querySelector('canvas')?.remove();
+    slot.rendered = false;
+  };
+
+  // Render one page into its wrapper at the device pixel ratio so text stays
+  // crisp on high-DPI screens.
+  const renderSlot = useCallback(async (doc: PDFDocumentProxy, slot: PageSlot, scale: number, version: number) => {
+    if (slot.rendered || slot.rendering) return;
+    slot.rendering = true;
+    try {
+      const page = await doc.getPage(slot.pageNum);
+      if (renderVersionRef.current !== version) return;
+      const viewport = page.getViewport({ scale });
+      const outputScale = Math.min(window.devicePixelRatio || 1, 3);
+      const canvas = document.createElement('canvas');
+      canvas.className = 'pdf-page-canvas';
+      canvas.width = Math.floor(viewport.width * outputScale);
+      canvas.height = Math.floor(viewport.height * outputScale);
+      canvas.style.width = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const task = page.render({
+        canvasContext: ctx,
+        viewport,
+        transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined,
+      });
+      slot.task = task;
+      await task.promise;
+      if (renderVersionRef.current !== version) return;
+      slot.wrapper.querySelector('canvas')?.remove();
+      slot.wrapper.insertBefore(canvas, slot.wrapper.firstChild);
+      slot.rendered = true;
+      page.cleanup();
+    } catch {
+      // Render was cancelled (new render started, zoom changed, page released).
+    } finally {
+      slot.rendering = false;
+      slot.task = null;
+    }
+  }, []);
+
+  // Lay out every page of `doc` at the given zoom. The pages that are visible
+  // right now are rendered before the old pages are swapped out, so a
+  // recompile updates the view without flashing or losing the scroll position.
+  const renderDocument = useCallback(async (doc: PDFDocumentProxy, zoomLevel: number) => {
     const container = containerRef.current;
+    if (!container) return;
+    const version = ++renderVersionRef.current;
+    const scale = zoomLevel / 100;
     const scrollToRestore = savedScrollRef.current;
 
-    // Stamp this render; if it changes before we finish, we were superseded.
-    const version = ++renderVersionRef.current;
-    container.innerHTML = '';
-    pageWrappersRef.current = [];
+    let pages;
+    try {
+      pages = await Promise.all(
+        Array.from({ length: doc.numPages }, (_, index) => doc.getPage(index + 1))
+      );
+    } catch (err) {
+      console.error('Failed to read PDF pages:', err);
+      return;
+    }
+    if (renderVersionRef.current !== version || !containerRef.current) return;
 
-    const scale = zoomLevel / 100;
+    baseWidthRef.current = pages[0]?.getViewport({ scale: 1 }).width ?? 0;
 
-    for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
-      if (renderVersionRef.current !== version) return;
-
-      const page = await doc.getPage(pageNum);
-      if (renderVersionRef.current !== version) {
-        page.cleanup();
-        return;
+    // Page numbers visible in the current layout (before the swap).
+    const visiblePages: number[] = [];
+    const containerBox = container.getBoundingClientRect();
+    container.querySelectorAll<HTMLDivElement>('.pdf-page-wrapper').forEach(wrapper => {
+      const box = wrapper.getBoundingClientRect();
+      if (box.bottom >= containerBox.top && box.top <= containerBox.bottom) {
+        visiblePages.push(Number(wrapper.dataset.pageNum));
       }
+    });
+    if (visiblePages.length === 0) {
+      visiblePages.push(1, 2);
+    }
 
+    const slots: PageSlot[] = pages.map((page, index) => {
       const viewport = page.getViewport({ scale });
-
       const wrapper = document.createElement('div');
       wrapper.className = 'pdf-page-wrapper synctex-enabled';
-      wrapper.dataset.pageNum = String(pageNum);
-      wrapper.style.width = `${viewport.width}px`;
-      wrapper.style.height = `${viewport.height}px`;
+      wrapper.dataset.pageNum = String(index + 1);
+      wrapper.style.width = `${Math.floor(viewport.width)}px`;
+      wrapper.style.height = `${Math.floor(viewport.height)}px`;
+      return { pageNum: index + 1, wrapper, rendered: false, rendering: false, task: null };
+    });
 
-      const canvas = document.createElement('canvas');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      canvas.className = 'pdf-page-canvas';
-      wrapper.appendChild(canvas);
-      container.appendChild(wrapper);
-      pageWrappersRef.current[pageNum] = wrapper;
+    await Promise.all(
+      visiblePages
+        .filter(pageNum => pageNum >= 1 && pageNum <= slots.length)
+        .map(pageNum => renderSlot(doc, slots[pageNum - 1], scale, version))
+    );
+    if (renderVersionRef.current !== version || !containerRef.current) return;
 
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { page.cleanup(); continue; }
+    observerRef.current?.disconnect();
+    slotsRef.current.forEach(slot => slot.task?.cancel());
 
-      try {
-        await page.render({ canvasContext: ctx, viewport }).promise;
-      } catch {
-        // Render was cancelled (new render started or zoom changed).
-        page.cleanup();
-        return;
-      }
-      page.cleanup();
-    }
+    const target = containerRef.current;
+    target.replaceChildren(...slots.map(slot => slot.wrapper));
+    target.scrollTop = scrollToRestore;
+    slotsRef.current = slots;
+    pageWrappersRef.current = [];
+    slots.forEach(slot => { pageWrappersRef.current[slot.pageNum] = slot.wrapper; });
 
-    // All pages are in the DOM — restore scroll position.
-    if (renderVersionRef.current === version) {
-      container.scrollTop = scrollToRestore;
-    }
+    const slotByWrapper = new Map(slots.map(slot => [slot.wrapper as Element, slot]));
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        const slot = slotByWrapper.get(entry.target);
+        if (!slot) return;
+        if (entry.isIntersecting) {
+          void renderSlot(doc, slot, scale, version);
+        } else if (slot.rendered || slot.rendering) {
+          releaseSlot(slot);
+        }
+      });
+    }, { root: target, rootMargin: '150% 0px' });
+    slots.forEach(slot => observer.observe(slot.wrapper));
+    observerRef.current = observer;
+  }, [renderSlot]);
+
+  useEffect(() => () => {
+    observerRef.current?.disconnect();
+    pdfDocRef.current?.destroy();
   }, []);
 
   // Load (or unload) the PDF document whenever the compiled pdfData changes.
   useEffect(() => {
     if (!pdfData) {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      slotsRef.current = [];
       pdfDocRef.current?.destroy();
       pdfDocRef.current = null;
       renderVersionRef.current++; // cancel any ongoing render
@@ -224,29 +361,29 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
     for (let i = 0; i < bytes.length; i++) data[i] = bytes.charCodeAt(i);
 
     const loadingTask = pdfjsLib.getDocument({ data });
+    let cancelled = false;
     loadingTask.promise
       .then(doc => {
-        pdfDocRef.current?.destroy();
+        if (cancelled) {
+          doc.destroy();
+          return;
+        }
+        const previous = pdfDocRef.current;
         pdfDocRef.current = doc;
-        renderAllPages(doc, zoom);
+        void renderDocument(doc, zoomRef.current).finally(() => {
+          // The old document can go once the new pages are on screen.
+          if (previous && previous !== doc) previous.destroy();
+        });
       })
-      .catch(err => console.error('Failed to load PDF:', err));
+      .catch(err => {
+        if (!cancelled) console.error('Failed to load PDF:', err);
+      });
 
-    return () => { loadingTask.destroy().catch(() => {}); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfData, renderAllPages]);
-  // Note: `zoom` is intentionally omitted — zoom changes are handled by the
-  // separate effect below so we don't reload the document on every zoom.
-
-  useEffect(() => {
-    if (isLatexFile && currentFilePath && lastSuccessfulSourcePathRef.current !== currentFilePath) {
-      setPdfData('');
-      setPdfPath('');
-      setError('');
-      setCompilationLog('');
-      setDiagnostics([]);
-    }
-  }, [currentFilePath, isLatexFile]);
+    return () => {
+      cancelled = true;
+      loadingTask.destroy().catch(() => {});
+    };
+  }, [pdfData, renderDocument]);
 
   // Re-render at the new zoom level whenever the user zooms in/out.
   useEffect(() => {
@@ -264,10 +401,10 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
     }
     prevZoomRef.current = zoom;
 
-    renderAllPages(doc, zoom);
-  }, [zoom, renderAllPages]);
+    void renderDocument(doc, zoom);
+  }, [zoom, renderDocument]);
 
-  const compileLatex = useCallback(async () => {
+  const compileLatex = useCallback(async (options: { force?: boolean; explicit?: boolean } = {}) => {
     if (!isLatexFile || !currentFilePath) {
       return;
     }
@@ -277,33 +414,45 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
     latestCompileRequestRef.current = requestId;
 
     setIsCompiling(true);
-    setError('');
-    setCompilationLog('');
     setCompilationStatus('Compiling...');
 
     try {
-      const result = await api.compileLatex(currentFilePath, latexEngine);
-
+      await beforeCompileRef.current?.(Boolean(options.explicit));
       if (latestCompileRequestRef.current !== requestId) {
         return;
       }
+      const result = await api.compileLatex(currentFilePath, latexEngine, {
+        projectRoot: projectPath || undefined,
+        force: Boolean(options.force),
+      });
 
+      if (latestCompileRequestRef.current !== requestId || result?.cancelled) {
+        return;
+      }
+
+      const resultRoot: string = result.rootFile || currentFilePath;
       if (result.success) {
         setPdfData(result.pdfData);
         setPdfPath(result.pdfPath || '');
+        setRootFile(resultRoot);
         setCompilationLog([result.log, result.warnings].filter(Boolean).join('\n'));
         setDiagnostics(result.diagnostics || []);
         setError('');
         setCompilationStatus('Compilation successful');
-        lastSuccessfulSourcePathRef.current = currentFilePath;
+        lastSuccessfulRootRef.current = resultRoot;
       } else {
         setError(result.error || 'Compilation failed');
+        setErrorKind(result.notDocument ? 'info' : 'error');
         const fullLog = [result.log, result.details].filter(Boolean).join('\n');
         setCompilationLog(fullLog);
         setDiagnostics(result.diagnostics || []);
-        if (lastSuccessfulSourcePathRef.current !== currentFilePath) {
+        // Keep showing the last good PDF of the same document while fixing
+        // an error; a PDF of a different document would be misleading.
+        if (lastSuccessfulRootRef.current !== resultRoot) {
           setPdfData('');
           setPdfPath('');
+          setRootFile('');
+          lastSuccessfulRootRef.current = null;
         }
         setCompilationStatus('');
 
@@ -317,19 +466,30 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
         return;
       }
       setError(`Compilation Error: ${err.message}`);
+      setErrorKind('error');
       console.error('Error compiling LaTeX:', err);
       setDiagnostics([]);
-      if (lastSuccessfulSourcePathRef.current !== currentFilePath) {
-        setPdfData('');
-        setPdfPath('');
-      }
       setCompilationStatus('');
     } finally {
       if (latestCompileRequestRef.current === requestId) {
         setIsCompiling(false);
       }
     }
-  }, [isLatexFile, currentFilePath, latexEngine, onMissingPackages]);
+  }, [isLatexFile, currentFilePath, latexEngine, onMissingPackages, projectPath]);
+
+  // A different project: nothing from the previous one belongs on screen.
+  const previousProjectRef = useRef(projectPath);
+  useEffect(() => {
+    if (previousProjectRef.current === projectPath) return;
+    previousProjectRef.current = projectPath;
+    setError('');
+    setCompilationLog('');
+    setDiagnostics([]);
+    setPdfData('');
+    setPdfPath('');
+    setRootFile('');
+    lastSuccessfulRootRef.current = null;
+  }, [projectPath]);
 
   useEffect(() => {
     if (isLatexFile && latexInstalled && compileNonce > 0) {
@@ -343,7 +503,8 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
       setDiagnostics([]);
       setPdfData('');
       setPdfPath('');
-      lastSuccessfulSourcePathRef.current = null;
+      setRootFile('');
+      lastSuccessfulRootRef.current = null;
     }
   }, [compileNonce, latexInstalled, isLatexFile, latexEngine, compileLatex]);
 
@@ -380,6 +541,7 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
   }, []);
 
   // Ctrl/Cmd + click on the PDF → inverse search (jump to source).
+  // Ctrl/Cmd + mouse wheel → zoom.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -399,16 +561,14 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
       ev.preventDefault();
       ev.stopPropagation();
 
-      const canvas = wrapper.querySelector('canvas') as HTMLCanvasElement | null;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
+      const rect = wrapper.getBoundingClientRect();
       const scale = zoomRef.current / 100;
       const h = (ev.clientX - rect.left) / scale;
       const v = (ev.clientY - rect.top) / scale;
 
       try {
         const api = (window as any).api;
-        const result = await api.synctex.inverse(currentPdfPath, pageNum, h, v);
+        const result = await api.synctex.inverse(currentPdfPath, pageNum, h, v, rootFileRef.current || undefined);
         if (result?.success && result.file && result.line) {
           onSyncTexJumpRef.current?.({
             file: result.file,
@@ -423,8 +583,19 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
       }
     };
 
+    const handleWheel = (ev: WheelEvent) => {
+      if (!(ev.ctrlKey || ev.metaKey)) return;
+      ev.preventDefault();
+      const factor = ev.deltaY < 0 ? 1.1 : 1 / 1.1;
+      setZoom(prev => clampZoom(prev * factor));
+    };
+
     container.addEventListener('click', handleClick);
-    return () => container.removeEventListener('click', handleClick);
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => {
+      container.removeEventListener('click', handleClick);
+      container.removeEventListener('wheel', handleWheel);
+    };
   }, [pdfData]);
 
   useImperativeHandle(ref, () => ({
@@ -432,7 +603,13 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
       if (!currentFilePath) return;
       try {
         const api = (window as any).api;
-        const result = await api.synctex.forward(currentFilePath, line, column ?? 1, pdfPathRef.current || undefined);
+        const result = await api.synctex.forward(
+          currentFilePath,
+          line,
+          column ?? 1,
+          pdfPathRef.current || undefined,
+          rootFileRef.current || undefined
+        );
         if (result?.success && result.rects && result.rects.length > 0) {
           flashSynctexRects(result.rects);
         } else if (result?.error) {
@@ -456,21 +633,29 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
   }), [currentFilePath, flashSynctexRects]);
 
   const handleZoomIn = () => {
-    setZoom(prev => Math.min(prev + 10, 200));
+    setZoom(prev => clampZoom(prev + 10));
   };
 
   const handleZoomOut = () => {
-    setZoom(prev => Math.max(prev - 10, 50));
+    setZoom(prev => clampZoom(prev - 10));
+  };
+
+  const handleFitWidth = () => {
+    const container = containerRef.current;
+    if (!container || !baseWidthRef.current) return;
+    // Leave room for the vertical scrollbar and page shadow.
+    const available = container.clientWidth - 32;
+    setZoom(clampZoom((available / baseWidthRef.current) * 100));
   };
 
   const handleRefresh = () => {
     if (latexInstalled && isLatexFile) {
-      compileLatex();
+      compileLatex({ force: true, explicit: true });
     }
   };
 
   const handleExportPDF = async () => {
-    if (!pdfData) {
+    if (!pdfPath) {
       setNotification({
         isOpen: true,
         title: 'No PDF Available',
@@ -481,26 +666,22 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
     }
 
     try {
-      const binary = atob(pdfData);
-      const array = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i += 1) {
-        array[i] = binary.charCodeAt(i);
-      }
-      const blob = new Blob([array], { type: 'application/pdf' });
-
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'document.pdf';
-      a.click();
-      URL.revokeObjectURL(url);
-
-      setNotification({
-        isOpen: true,
-        title: 'Export Successful',
-        message: 'PDF exported successfully!',
-        type: 'success',
+      const sourceRoot = rootFile || currentFilePath || pdfPath;
+      const defaultName = `${fileNameOf(sourceRoot).replace(/\.[^.]+$/, '')}.pdf`;
+      const result = await (window as any).api.savePdfAs({
+        sourcePath: pdfPath,
+        defaultPath: `${dirNameOf(sourceRoot)}/${defaultName}`,
       });
+      if (result?.success) {
+        setNotification({
+          isOpen: true,
+          title: 'Export Successful',
+          message: `PDF saved to ${result.filePath}`,
+          type: 'success',
+        });
+      } else if (!result?.canceled) {
+        throw new Error(result?.error || 'Unknown error');
+      }
     } catch (exportError) {
       console.error('PDF export error:', exportError);
       setNotification({
@@ -512,13 +693,26 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
     }
   };
 
+  const handleOpenExternally = async () => {
+    if (!pdfPath) return;
+    const result = await (window as any).api.openPath(pdfPath);
+    if (!result?.success) {
+      setNotification({
+        isOpen: true,
+        title: 'Cannot Open PDF',
+        message: result?.error || 'No PDF viewer is available.',
+        type: 'error',
+      });
+    }
+  };
+
   const handleInstallLatex = async () => {
     await (window as any).api.openLatexDownload();
   };
 
   const handleDiagnosticClick = (diagnostic: LatexDiagnostic) => {
     if (!diagnostic.line) return;
-    const file = diagnostic.file || currentFilePath;
+    const file = diagnostic.file || rootFile || currentFilePath;
     if (!file) return;
     onSyncTexJumpRef.current?.({
       file,
@@ -526,6 +720,29 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
       column: diagnostic.column || 1,
     });
   };
+
+  const renderDiagnostics = (items: LatexDiagnostic[]) => (
+    <div className="preview-diagnostics">
+      {items.map((diagnostic, index) => {
+        const canJump = Boolean(diagnostic.line);
+        const location = diagnostic.line ? `${diagnostic.file ? fileNameOf(diagnostic.file) : 'Source'}:${diagnostic.line}` : '';
+        return (
+          <button
+            type="button"
+            key={`${diagnostic.severity}-${diagnostic.line || index}-${diagnostic.message}`}
+            className={`preview-diagnostic preview-diagnostic-${diagnostic.severity}`}
+            onClick={() => handleDiagnosticClick(diagnostic)}
+            disabled={!canJump}
+            title={canJump ? 'Jump to source line' : undefined}
+          >
+            <span className="preview-diagnostic-severity">{diagnostic.severity}</span>
+            {location && <span className="preview-diagnostic-location">{location}</span>}
+            <span className="preview-diagnostic-message">{diagnostic.message}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
 
   if (isMarkdownFile) {
     return (
@@ -563,17 +780,25 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
           <button type="button" className="latex-install-btn" onClick={handleInstallLatex}>
             Download LaTeX Distribution
           </button>
+          <button type="button" className="latex-recheck-btn" onClick={checkLatexInstallation}>
+            I installed it – check again
+          </button>
         </div>
       </div>
     );
   }
 
+  const showingOtherRoot = Boolean(rootFile && currentFilePath && rootFile !== currentFilePath);
+
   return (
     <div className="preview">
       <div className="preview-header">
         <div className="preview-status">
-          <span className="preview-title">
-            Preview {latexVersion ? `(${latexVersion})` : ''}
+          <span className="preview-title" title={latexVersion}>
+            Preview
+            {showingOtherRoot && (
+              <span className="preview-root" title={rootFile}> · {fileNameOf(rootFile)}</span>
+            )}
           </span>
           {isCompiling && (
             <span className="preview-status-indicator">
@@ -582,16 +807,19 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
           )}
         </div>
         <div className="preview-controls">
-          <button type="button" title="Refresh" onClick={handleRefresh} disabled={isCompiling}>
+          <button type="button" title="Recompile (full rebuild)" onClick={handleRefresh} disabled={isCompiling}>
             <FiRefreshCw size={16} />
           </button>
-          <button type="button" title="Zoom In" onClick={handleZoomIn}>
-            <FiZoomIn size={16} />
-          </button>
-          <button type="button" title="Zoom Out" onClick={handleZoomOut}>
+          <button type="button" title="Zoom Out (Ctrl+Wheel)" onClick={handleZoomOut}>
             <FiZoomOut size={16} />
           </button>
           <span className="preview-zoom">{zoom}%</span>
+          <button type="button" title="Zoom In (Ctrl+Wheel)" onClick={handleZoomIn}>
+            <FiZoomIn size={16} />
+          </button>
+          <button type="button" title="Fit page width" onClick={handleFitWidth} disabled={!pdfData}>
+            <FiMaximize2 size={16} />
+          </button>
           <button
             type="button"
             title={'SyncTeX shortcuts:\n  • Ctrl+Click in PDF → jump to source\n  • Ctrl+Alt+J in editor → jump to PDF'}
@@ -606,7 +834,10 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
           >
             <FiHelpCircle size={16} />
           </button>
-          <button type="button" title="Export PDF" onClick={handleExportPDF}>
+          <button type="button" title="Open PDF in the system viewer" onClick={handleOpenExternally} disabled={!pdfPath}>
+            <FiExternalLink size={16} />
+          </button>
+          <button type="button" title="Export PDF…" onClick={handleExportPDF} disabled={!pdfPath}>
             <FiDownload size={16} />
           </button>
         </div>
@@ -622,40 +853,38 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
           <div ref={containerRef} className="pdf-canvas-container" />
         ) : (
           <div className="preview-empty">
-            <p>No PDF compiled yet.</p>
+            <p>{isCompiling ? 'Compiling…' : 'No PDF compiled yet.'}</p>
           </div>
         )}
       </div>
+      {warningDiagnostics.length > 0 && (
+        <div className="preview-warnings">
+          <button
+            type="button"
+            className="preview-warnings-toggle"
+            onClick={() => setShowWarnings(prev => !prev)}
+            aria-expanded={showWarnings}
+          >
+            {showWarnings ? <FiChevronDown size={14} /> : <FiChevronRight size={14} />}
+            <FiAlertTriangle size={14} />
+            <span>
+              {warningDiagnostics.length} warning{warningDiagnostics.length !== 1 ? 's' : ''} in the last compilation
+            </span>
+          </button>
+          {showWarnings && renderDiagnostics(warningDiagnostics)}
+        </div>
+      )}
       {error && (
-        <div className="preview-error">
-          <h4>Compilation Error</h4>
+        <div className={`preview-error ${errorKind === 'info' ? 'preview-info' : ''}`}>
+          <h4>{errorKind === 'info' ? 'Nothing to compile' : 'Compilation Error'}</h4>
           <pre>{error}</pre>
-          {diagnostics.length > 0 && (
-            <div className="preview-diagnostics">
-              {diagnostics.map((diagnostic, index) => {
-                const canJump = Boolean(diagnostic.line);
-                const location = diagnostic.line ? `${diagnostic.file ? diagnostic.file.split(/[\\/]/).pop() : 'Source'}:${diagnostic.line}` : '';
-                return (
-                  <button
-                    type="button"
-                    key={`${diagnostic.severity}-${diagnostic.line || index}-${diagnostic.message}`}
-                    className={`preview-diagnostic preview-diagnostic-${diagnostic.severity}`}
-                    onClick={() => handleDiagnosticClick(diagnostic)}
-                    disabled={!canJump}
-                    title={canJump ? 'Jump to source line' : undefined}
-                  >
-                    <span className="preview-diagnostic-severity">{diagnostic.severity}</span>
-                    {location && <span className="preview-diagnostic-location">{location}</span>}
-                    <span className="preview-diagnostic-message">{diagnostic.message}</span>
-                  </button>
-                );
-              })}
-            </div>
+          {diagnostics.length > 0 && renderDiagnostics(diagnostics)}
+          {compilationLog && (
+            <details>
+              <summary>View Full Log</summary>
+              <pre>{compilationLog}</pre>
+            </details>
           )}
-          <details>
-            <summary>View Full Log</summary>
-            <pre>{compilationLog}</pre>
-          </details>
         </div>
       )}
       <NotificationDialog
