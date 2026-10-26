@@ -6,7 +6,7 @@
 
 **A modern, open-source LaTeX editor for desktop**
 
-Version 1.6.0 (Steyr Edition)
+Version 1.6.1 (Steyr Edition)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Electron](https://img.shields.io/badge/Electron-28-blue.svg)](https://www.electronjs.org/)
@@ -62,20 +62,20 @@ Download Openotex from the official website:
 
 | Platform | Package | Notes |
 |----------|---------|-------|
-| Windows 10/11 (x64) | `Openotex-Setup-1.6.0.exe` | Installer with Start menu entry |
-| Windows 10/11 (x64) | `Openotex-1.6.0-win-x64.zip` | Portable: extract and run `Openotex.exe` |
-| Linux (x86_64) | `Openotex-1.6.0-x86_64.AppImage` | Single file, no installation |
+| Windows 10/11 (x64) | `Openotex-Setup-1.6.1.exe` | Installer with Start menu entry |
+| Windows 10/11 (x64) | `Openotex-1.6.1-win-x64.zip` | Portable: extract and run `Openotex.exe` |
+| Linux (x86_64) | `Openotex-1.6.1-x86_64.AppImage` | Single file, no installation |
 
 **Linux AppImage:**
 
 ```bash
-chmod +x Openotex-1.6.0-x86_64.AppImage
-./Openotex-1.6.0-x86_64.AppImage
+chmod +x Openotex-1.6.1-x86_64.AppImage
+./Openotex-1.6.1-x86_64.AppImage
 ```
 
-On distributions that restrict unprivileged user namespaces (for example Ubuntu 24.04 and newer), start it with `--no-sandbox` if it does not open. Some systems also need FUSE 2 (`sudo apt install libfuse2t64` on Ubuntu 24.04, `libfuse2` on older releases).
+On systems that restrict unprivileged user namespaces (Ubuntu 24.04 and newer) or when started as root, the AppImage turns off the Chromium sandbox by itself. Some systems need FUSE 2 to run AppImages (`sudo apt install libfuse2t64` on Ubuntu 24.04, `libfuse2` on older releases).
 
-A LaTeX distribution is required: MiKTeX or TeX Live on Windows, TeX Live on Linux (`sudo apt install texlive-full latexmk`), MacTeX on macOS. `latexmk` is recommended.
+A LaTeX distribution is required: MiKTeX or TeX Live on Windows, TeX Live on Linux, MacTeX on macOS. `latexmk` is recommended. On Debian/Ubuntu a good start is `sudo apt install texlive-latex-extra texlive-fonts-recommended lmodern cm-super latexmk` (`texlive-full` has everything). When a document needs a package that is missing, Openotex names the distribution package that contains it and can install it for you (it asks for your password).
 
 ### Building from Source
 

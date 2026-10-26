@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell, Menu, MenuItemConstructorOp
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
-import { readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import chokidar, { FSWatcher } from 'chokidar';
 import { APP_EDITION } from '../shared/appInfo';
@@ -12,14 +12,18 @@ import {
   collectLatexReferences,
   compileLatexDocument,
   CompileOptions,
-  detectLatexDistribution,
+  detectSystemPackageManager,
+  detectTexSetup,
   execFileAsync,
+  installLatexPackages,
   isLatexmkAvailable,
   isMac,
   isWindows,
+  latexInstallSuggestion,
   LatexEngine,
   normalizeForCompare,
   pathExists,
+  planTexPackageInstall,
   ProcessCancelToken,
   resetToolProbeCache,
   resolveRootDocument,
@@ -531,10 +535,22 @@ const installMcpServerScript = async () => {
   }
 };
 
+// The packaged Linux binary is openotex.bin behind a launcher script that
+// decides about the Chromium sandbox (scripts/linux-after-pack.js). Other
+// programs should start the launcher (or the AppImage), not the binary.
+const appLauncherPath = () => {
+  if (process.env.APPIMAGE) return process.env.APPIMAGE;
+  if (process.platform === 'linux' && process.execPath.endsWith('.bin')) {
+    const launcher = process.execPath.slice(0, -'.bin'.length);
+    if (existsSync(launcher)) return launcher;
+  }
+  return process.execPath;
+};
+
 ipcMain.handle('get-mcp-setup', async () => {
   await installMcpServerScript();
   // The Openotex executable doubles as the Node.js runtime for the server.
-  const command = process.env.APPIMAGE || process.execPath;
+  const command = appLauncherPath();
   const env: Record<string, string> = { ELECTRON_RUN_AS_NODE: '1', OPENOTEX_APP: command };
   if (!app.isPackaged) {
     // Development: electron.exe needs the app folder to start the editor.
@@ -1136,29 +1152,24 @@ ipcMain.handle('check-latex-installation', async () => {
   augmentPathWithTexDistributions();
   resetToolProbeCache();
   try {
-    // Try to find pdflatex
     const { stdout } = await execFileAsync('pdflatex', ['--version'], { timeout: 20000 });
-
-    // Detect distribution
-    let distribution = 'unknown';
-    if (stdout.toLowerCase().includes('miktex')) {
-      distribution = 'miktex';
-    } else if (stdout.toLowerCase().includes('tex live')) {
-      distribution = 'texlive';
-    }
-
+    const setup = await detectTexSetup();
     return {
       success: true,
       installed: true,
       version: stdout.split('\n')[0].trim(),
       engine: 'pdflatex',
-      distribution,
+      distribution: setup.distribution,
+      manager: setup.manager,
       latexmk: await isLatexmkAvailable(),
     };
   } catch (error) {
+    const manager = detectSystemPackageManager();
     return {
       success: true,
       installed: false,
+      manager,
+      installSuggestion: latexInstallSuggestion(manager, process.platform),
       message: 'LaTeX not found. Please install TeX Live or MiKTeX.'
     };
   }
@@ -1182,41 +1193,31 @@ ipcMain.handle('check-package-installed', async (event, packageName: string) => 
   }
 });
 
-// Install LaTeX package
-ipcMain.handle('install-latex-package', async (event, packageName: string) => {
-  try {
-    if (!/^[A-Za-z0-9._-]+$/.test(packageName)) {
-      return { success: false, error: 'Invalid package name.' };
-    }
-    const distribution = await detectLatexDistribution();
+const toPackageNames = (input: unknown): string[] =>
+  (Array.isArray(input) ? input : [input]).filter((name): name is string => typeof name === 'string' && /^[A-Za-z0-9._-]+$/.test(name));
 
-    if (distribution === 'miktex') {
-      // MiKTeX package manager
-      if (isWindows) {
-        const { stdout } = await execFileAsync('mpm', [ `--install=${packageName}` ], { timeout: 120000 });
-        return { success: true, message: `Package ${packageName} installed successfully`, output: stdout, distribution: 'miktex' };
-      } else {
-        const { stdout } = await execFileAsync('miktex', [ 'packages', 'install', packageName ], { timeout: 120000 });
-        return { success: true, message: `Package ${packageName} installed successfully`, output: stdout, distribution: 'miktex' };
-      }
-    } else if (distribution === 'texlive') {
-      // TeX Live package manager (tlmgr)
-      const { stdout } = await execFileAsync('tlmgr', [ 'install', packageName ], { timeout: 120000 });
-      return { success: true, message: `Package ${packageName} installed successfully`, output: stdout, distribution: 'texlive' };
-    } else {
-      return {
-        success: false,
-        error: 'Unknown LaTeX distribution. Cannot auto-install packages.',
-        distribution: 'unknown'
-      };
-    }
-  } catch (error: any) {
-    return {
-      success: false,
-      error: error.message || 'Failed to install package',
-      details: error.stderr || ''
-    };
+// What installing these packages involves (shown before asking for a password).
+ipcMain.handle('plan-latex-package-install', async (_event, packageNames: string | string[]) => {
+  const setup = await detectTexSetup();
+  const plan = planTexPackageInstall(setup.manager, toPackageNames(packageNames), { platform: process.platform, tlmgrPath: setup.tlmgrPath });
+  return {
+    manager: setup.manager,
+    packages: plan?.packages ?? [],
+    elevated: plan?.elevated ?? false,
+    manualCommand: plan?.manualCommand,
+  };
+});
+
+// Install LaTeX packages (one name or a list, installed in one go so a
+// system package manager asks for the password only once).
+ipcMain.handle('install-latex-package', async (_event, packageNames: string | string[]) => {
+  const names = toPackageNames(packageNames);
+  if (names.length === 0) {
+    return { success: false, error: 'Invalid package name.' };
   }
+  const result = await installLatexPackages(names, { interactive: true });
+  resetToolProbeCache();
+  return { ...result, error: result.success ? undefined : result.message };
 });
 
 // Open LaTeX installation page

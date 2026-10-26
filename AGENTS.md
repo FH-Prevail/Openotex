@@ -3,7 +3,7 @@
 These instructions apply to this repository (`GitHub/Openotex_github/Openotex`),
 the maintained source of the Openotex Electron desktop application.
 
-Current release: **1.6.0 (Steyr Edition)**, 2026-10-26.
+Current release: **1.6.1 (Steyr Edition)**, 2026-10-26.
 
 ## Project boundary
 
@@ -44,8 +44,19 @@ npm ci
 npm test               # unit tests (tsc + node)
 npm run build          # cleans dist/, builds main, renderer, preload, mcp
 npm run package        # Windows: release/Openotex-Setup-<v>.exe + Openotex-<v>-win-x64.zip
-npm run package:linux  # Linux: release/Openotex-<v>-x86_64.AppImage (works on Windows)
+npm run package:linux  # Linux: release/Openotex-<v>-x86_64.AppImage (Linux/WSL/container only)
 ```
+
+- The AppImage needs Linux tools (mksquashfs); on Windows build it in a
+  `node:20-bookworm-slim` container (see BUILDING.md). The `afterPack` hook
+  `scripts/linux-after-pack.js` renames the binary to `openotex.bin` and
+  installs the `openotex` launcher that adds `--no-sandbox` only where the
+  Chromium sandbox cannot work. Keep it when changing the Linux target.
+- LaTeX package installs go through `src/shared/texPackages.ts` (which
+  package contains a file, per package manager) and `detectTexSetup` /
+  `installLatexPackages` in `src/main/latexService.ts`. Distribution TeX
+  (pdflatex in /usr/bin) is never touched without the user: no tlmgr, and
+  pkexec only after the user clicks Install.
 
 - If `ELECTRON_RUN_AS_NODE=1` is set in your shell (VS Code terminals and
   agent sessions often set it), Electron runs as plain Node and the app

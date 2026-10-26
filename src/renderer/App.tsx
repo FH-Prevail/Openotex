@@ -12,7 +12,7 @@ import NotificationDialog from './components/NotificationDialog';
 import TerminalPanel from './components/TerminalPanel';
 import AnnotationPanel from './components/AnnotationPanel';
 import TabBar from './components/TabBar';
-import PackageInstallDialog from './components/PackageInstallDialog';
+import PackageInstallDialog, { PackageInstallResult } from './components/PackageInstallDialog';
 import AboutDialog from './components/AboutDialog';
 import McpDialog from './components/McpDialog';
 import AnnotationDialog from './components/AnnotationDialog';
@@ -1368,55 +1368,46 @@ const AppContent: React.FC = () => {
         const { lineNumber, column } = livePosition || cursorPositionRef.current;
         void previewRef.current?.forwardSearch(lineNumber, column);
     }, [currentFile]);
-    const handleInstallPackage = async (packageName: string): Promise<void> => {
+    const handleInstallPackages = async (packageNames: string[]): Promise<PackageInstallResult> => {
         const api = (window as any).api;
+        const label = packageNames.join(', ');
+        // System package managers can take minutes (download + password prompt).
+        showStatusMessage(`Installing ${label}...`, 30 * 60 * 1000);
         try {
-            showStatusMessage(`Installing ${packageName}...`, 60000);
-            const result = await api.installLatexPackage( packageName);
+            const result: PackageInstallResult = await api.installLatexPackage(packageNames);
             if (result.success) {
-                showStatusMessage(`${packageName} installed`);
-                setMissingPackages(prev => prev.filter(pkg => pkg !== packageName));
+                showStatusMessage(`Installed ${label}`);
+                const remaining = missingPackages.filter(pkg => !packageNames.includes(pkg));
+                setMissingPackages(remaining);
+                if (remaining.length === 0) {
+                    setShowPackageDialog(false);
+                    triggerCompile();
+                }
             }
             else {
-                showNotification('Installation Failed', result.error || `Failed to install ${packageName}`, 'error');
+                showStatusMessage('Package installation failed');
             }
+            return result;
         }
         catch (error) {
-            showNotification('Installation Error', `Error installing ${packageName}: ${error}`, 'error');
+            showStatusMessage('Package installation failed');
+            return { success: false, error: String(error) };
         }
     };
-    const handleInstallAllPackages = async (): Promise<void> => {
-        const api = (window as any).api;
-        const remaining = new Set(missingPackages);
-        for (const pkg of missingPackages) {
-            try {
-                showStatusMessage(`Installing ${pkg}...`, 60000);
-                const result = await api.installLatexPackage( pkg);
-                if (result.success) {
-                    remaining.delete(pkg);
-                }
-                else {
-                    showNotification('Installation Failed', result.error || `Failed to install ${pkg}`, 'error');
-                    break;
-                }
-            }
-            catch (error) {
-                showNotification('Installation Error', `Error installing ${pkg}: ${error}`, 'error');
-                break;
-            }
-        }
-        const remainingList = Array.from(remaining);
-        setMissingPackages(remainingList);
-        if (remainingList.length === 0) {
-            showStatusMessage('All packages installed');
-            setShowPackageDialog(false);
-            triggerCompile();
-        }
-    };
-    const handleMissingPackages = useCallback((packages: string[]) => {
+    // A closed dialog stays closed for the same missing packages until the
+    // user compiles explicitly; auto-compile would otherwise reopen it on
+    // every keystroke.
+    const dismissedPackagesRef = useRef('');
+    const handleMissingPackages = useCallback((packages: string[], explicit?: boolean) => {
         setMissingPackages(packages);
-        setShowPackageDialog(true);
+        if (explicit || packages.join('\n') !== dismissedPackagesRef.current) {
+            setShowPackageDialog(true);
+        }
     }, []);
+    const handleClosePackageDialog = useCallback(() => {
+        dismissedPackagesRef.current = missingPackages.join('\n');
+        setShowPackageDialog(false);
+    }, [missingPackages]);
     useEffect(() => {
         const api = (window as any).api;
         let disposed = false;
@@ -2257,9 +2248,8 @@ const AppContent: React.FC = () => {
         <PackageInstallDialog
             isOpen={showPackageDialog}
             missingPackages={missingPackages}
-            onInstall={handleInstallPackage}
-            onInstallAll={handleInstallAllPackages}
-            onClose={() => setShowPackageDialog(false)}
+            onInstall={handleInstallPackages}
+            onClose={handleClosePackageDialog}
         />
         <AboutDialog isOpen={showAboutDialog} onClose={() => setShowAboutDialog(false)} />
         <McpDialog isOpen={showMcpDialog} onClose={() => setShowMcpDialog(false)} />

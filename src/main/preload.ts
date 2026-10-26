@@ -57,12 +57,16 @@ contextBridge.exposeInMainWorld('api', {
   // LaTeX
   checkLatexInstallation: () => ipcRenderer.invoke('check-latex-installation'),
   checkPackageInstalled: (packageName: string) => ipcRenderer.invoke('check-package-installed', packageName),
-  installLatexPackage: (packageName: string) => {
-    if (!isSafePackageName(packageName)) {
+  installLatexPackage: (packageNames: string | string[]) => {
+    const names = Array.isArray(packageNames) ? packageNames : [packageNames];
+    if (names.length === 0 || !names.every(name => typeof name === 'string' && isSafePackageName(name))) {
       return Promise.resolve({ success: false, error: 'Invalid package name.' });
     }
-    return ipcRenderer.invoke('install-latex-package', packageName);
+    return ipcRenderer.invoke('install-latex-package', names);
   },
+  planLatexPackageInstall: (packageNames: string[]) => (
+    ipcRenderer.invoke('plan-latex-package-install', packageNames.filter(name => typeof name === 'string' && isSafePackageName(name)))
+  ),
   openLatexDownload: () => ipcRenderer.invoke('open-latex-download'),
   compileLatex: (
     texFilePath: string,

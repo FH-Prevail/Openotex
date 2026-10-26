@@ -69,7 +69,14 @@ Output in `release/`:
 | `Openotex-<version>-win-x64.zip` | Windows portable archive |
 | `Openotex-<version>-x86_64.AppImage` | Linux x86_64 |
 
-The Linux AppImage can be built on Windows; electron-builder downloads the AppImage tooling on first use. Because Windows file systems have no executable bit, users must `chmod +x` the downloaded AppImage (they have to do that after any browser download anyway).
+The AppImage target needs Linux tools (`mksquashfs`), so build it on Linux, in WSL or in a container. From Windows, after `npm run build`, copy `package.json`, `dist/`, `assets/` and `scripts/` into an empty folder (bind-mounting a OneDrive folder is slow) and run:
+
+```powershell
+docker run --rm -v "C:path	ostaging:/build" -w /build node:20-bookworm-slim bash -c `
+  "apt-get update -qq && apt-get install -y -qq ca-certificates && npx -y electron-builder@24.13.3 --linux --publish never -c.electronVersion=28.3.3"
+```
+
+The AppImage is written to `release/` in that folder. The `afterPack` hook (`scripts/linux-after-pack.js`) replaces the `openotex` executable with a launcher script that starts `openotex.bin` and adds `--no-sandbox` only on systems where Chromium's sandbox cannot work (Ubuntu 24.04+ AppArmor user-namespace restriction, user namespaces disabled, running as root). Users must `chmod +x` a downloaded AppImage.
 
 ## MCP server
 

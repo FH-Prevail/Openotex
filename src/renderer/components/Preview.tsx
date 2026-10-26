@@ -16,6 +16,7 @@ import {
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 import NotificationDialog from './NotificationDialog';
+import CommandSnippet from './CommandSnippet';
 import type { LatexDiagnostic } from '../../shared/latexDiagnostics';
 import '../styles/Preview.css';
 import '../styles/Preview-addon.css';
@@ -54,7 +55,8 @@ interface PreviewProps {
   projectPath?: string;
   latexEngine?: 'pdflatex' | 'xelatex' | 'lualatex';
   beforeCompile?: (explicit?: boolean) => Promise<void>;
-  onMissingPackages?: (packages: string[]) => void;
+  // `explicit` reopens the install dialog even if the user closed it.
+  onMissingPackages?: (packages: string[], explicit?: boolean) => void;
   onSyncTexJump?: (target: { file: string; line: number; column: number }) => void;
 }
 
@@ -93,6 +95,10 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
   });
   const [latexInstalled, setLatexInstalled] = useState<boolean | null>(null);
   const [latexVersion, setLatexVersion] = useState<string>('');
+  const [latexInstallSuggestion, setLatexInstallSuggestion] = useState<{ message: string; command?: string } | null>(null);
+  // How to install what the last compilation was missing, and what that was.
+  const [installHint, setInstallHint] = useState<{ message: string; command?: string } | null>(null);
+  const [missingPackageNames, setMissingPackageNames] = useState<string[]>([]);
   const [notification, setNotification] = useState<{
     isOpen: boolean;
     title: string;
@@ -167,11 +173,10 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
   }, []);
 
   useEffect(() => {
+    // Install progress shows in the status line; a dialog here used to block
+    // the editor until dismissed, even after the install had finished.
     const dispose = (window as any).api.onCompilationStatus((status: { stage: string; message: string }) => {
       setCompilationStatus(status.message);
-      if (status.stage === 'font-installation' || status.stage === 'package-installation') {
-        setNotification({ isOpen: true, title: 'Installing Dependencies', message: status.message, type: 'info' });
-      }
     });
     return () => { dispose?.(); };
   }, []);
@@ -184,6 +189,7 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
         if (result.installed) {
           setLatexVersion(result.version);
         }
+        setLatexInstallSuggestion(result.installed ? null : result.installSuggestion ?? null);
       }
     } catch (err) {
       console.error('Error checking LaTeX installation:', err);
@@ -196,6 +202,11 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
     const pattern1 = /File `([^']+)\.sty' not found/gi;
     let match;
     while ((match = pattern1.exec(errorLog)) !== null) {
+      packages.add(match[1]);
+    }
+    // Document classes keep their extension (IEEEtran.cls).
+    const classPattern = /File `([^']+\.cls)' not found/gi;
+    while ((match = classPattern.exec(errorLog)) !== null) {
       packages.add(match[1]);
     }
     const pattern2 = /Missing \\usepackage\{([^}]+)\}/gi;
@@ -438,6 +449,8 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
         setCompilationLog([result.log, result.warnings].filter(Boolean).join('\n'));
         setDiagnostics(result.diagnostics || []);
         setError('');
+        setInstallHint(null);
+        setMissingPackageNames([]);
         setCompilationStatus('Compilation successful');
         lastSuccessfulRootRef.current = resultRoot;
       } else {
@@ -456,9 +469,11 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
         }
         setCompilationStatus('');
 
+        setInstallHint(result.installHint ?? null);
         const missing = detectMissingPackages(fullLog);
+        setMissingPackageNames(missing);
         if (missing.length > 0 && onMissingPackages) {
-          onMissingPackages(missing);
+          onMissingPackages(missing, Boolean(options.explicit));
         }
       }
     } catch (err: any) {
@@ -777,6 +792,12 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
           <p>
             Openotex requires a LaTeX distribution (MiKTeX, TeX Live, MacTeX) to compile documents.
           </p>
+          {latexInstallSuggestion && (
+            <div className="latex-install-suggestion">
+              <p>{latexInstallSuggestion.message}</p>
+              {latexInstallSuggestion.command && <CommandSnippet command={latexInstallSuggestion.command} />}
+            </div>
+          )}
           <button type="button" className="latex-install-btn" onClick={handleInstallLatex}>
             Download LaTeX Distribution
           </button>
@@ -878,6 +899,18 @@ const Preview = forwardRef<PreviewHandle, PreviewProps>(({
         <div className={`preview-error ${errorKind === 'info' ? 'preview-info' : ''}`}>
           <h4>{errorKind === 'info' ? 'Nothing to compile' : 'Compilation Error'}</h4>
           <pre>{error}</pre>
+          {(installHint || (missingPackageNames.length > 0 && onMissingPackages)) && (
+            <div className="preview-install-hint">
+              {installHint && <p>{installHint.message}</p>}
+              {installHint?.command && <CommandSnippet command={installHint.command} />}
+              {missingPackageNames.length > 0 && onMissingPackages && (
+                <button type="button" className="preview-install-hint-btn" onClick={() => onMissingPackages(missingPackageNames, true)}>
+                  <FiDownload size={13} />
+                  Install missing packages…
+                </button>
+              )}
+            </div>
+          )}
           {diagnostics.length > 0 && renderDiagnostics(diagnostics)}
           {compilationLog && (
             <details>

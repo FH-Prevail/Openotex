@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-10-26 — Steyr Edition
+
+### Added
+- Linux distributions' TeX Live (Debian/Ubuntu, Fedora, openSUSE, Arch) is recognized. For a missing package Openotex names the system package that contains the file (for example `lmodern`, `texlive-latex-extra`, `texlive-science`, `tex(siunitx.sty)`) and installs it after the system's password prompt, or shows the command to copy.
+- The "LaTeX not found" screen shows the install command for the detected Linux distribution.
+- The compile error panel explains how to install a missing package or font, with a copy button and an "Install missing packages…" button.
+- MCP: `get_latex_environment` reports the `package_manager`; a failed `compile_document` includes an `install_hint`.
+
+### Changed
+- The Linux AppImage adds `--no-sandbox` by itself only where Chromium's sandbox cannot work (Ubuntu 24.04+ AppArmor restriction, user namespaces disabled, running as root); everywhere else the sandbox stays on.
+- Project templates load the T1/Latin Modern fonts only when they are installed, so new projects also compile where `lmodern` is missing (for example Ubuntu's TeX Live without recommended packages).
+- "Install All" installs all missing packages in one step (one password prompt), then recompiles. A closed install dialog no longer reopens on every auto-compile for the same packages.
+- Packages whose name differs from the file are installed under the right name (`tikz` → `pgf`, `lmodern` → `lm`, `IEEEtran.cls` → `ieeetran`, …); tlmgr looks up the others.
+
+### Fixed
+- Linux with distribution TeX Live: a missing package or font ended in "tlmgr: user mode not initialized" (tlmgr is disabled there), so no PDF preview appeared.
+- Missing document classes (`.cls`) were not recognized as missing packages.
+- tlmgr could not be started on Windows (it is a batch file).
+- MiKTeX packages are installed with `miktex packages install` (`mpm --install` is deprecated and reported unknown packages as installed).
+- Automatic package installs opened an "Installing Dependencies" dialog that blocked the editor until it was dismissed; progress now shows in the preview status line.
+
 ## [1.6.0] - 2026-10-26 — Steyr Edition
 
 ### Added

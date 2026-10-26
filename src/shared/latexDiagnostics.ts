@@ -25,7 +25,10 @@ export const detectMissingLatexPackage = (output: string): string | null => {
     /! LaTeX Error: File `([^']+\.sty)' not found/,
     /! Package .* Error:.*package `([^']+)'/,
     /LaTeX Error: File `([^']+\.sty)' not found/,
-    /Cannot find file `([^']+\.sty)'/
+    /Cannot find file `([^']+\.sty)'/,
+    // A missing document class keeps its extension so installers can tell
+    // it from a package of the same name.
+    /LaTeX Error: File `([^']+\.cls)' not found/,
   ];
 
   for (const pattern of packagePatterns) {

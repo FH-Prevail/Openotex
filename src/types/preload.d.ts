@@ -42,7 +42,20 @@ declare global {
       cancelClose: () => Promise<any>;
       checkLatexInstallation: () => Promise<any>;
       checkPackageInstalled: (packageName: string) => Promise<any>;
-      installLatexPackage: (packageName: string) => Promise<any>;
+      installLatexPackage: (packageNames: string | string[]) => Promise<{
+        success: boolean;
+        message?: string;
+        error?: string;
+        manager?: string;
+        packages?: string[];
+        manualCommand?: string;
+      }>;
+      planLatexPackageInstall: (packageNames: string[]) => Promise<{
+        manager: string;
+        packages: string[];
+        elevated: boolean;
+        manualCommand?: string;
+      }>;
       openLatexDownload: () => Promise<any>;
       compileLatex: (
         texFilePath: string,

@@ -23,8 +23,8 @@ The command is the Openotex executable with `ELECTRON_RUN_AS_NODE=1`, so no sepa
 ```bash
 claude mcp add --transport stdio --scope user openotex \
   --env ELECTRON_RUN_AS_NODE=1 \
-  --env OPENOTEX_APP=/home/you/Applications/Openotex-1.6.0-x86_64.AppImage \
-  -- /home/you/Applications/Openotex-1.6.0-x86_64.AppImage /home/you/.config/openotex/mcp/openotex-mcp.cjs
+  --env OPENOTEX_APP=/home/you/Applications/Openotex-1.6.1-x86_64.AppImage \
+  -- /home/you/Applications/Openotex-1.6.1-x86_64.AppImage /home/you/.config/openotex/mcp/openotex-mcp.cjs
 ```
 
 ### Claude Desktop, Cursor and other `mcpServers` clients
@@ -69,9 +69,9 @@ All paths may be absolute or relative to `project_root`, which defaults to the s
 
 | Tool | Purpose |
 |------|---------|
-| `get_latex_environment` | Distribution (MiKTeX/TeX Live), versions of pdfLaTeX, XeLaTeX, LuaLaTeX, latexmk, BibTeX, Biber, SyncTeX |
+| `get_latex_environment` | Distribution (MiKTeX/TeX Live), `package_manager` (`miktex`/`tlmgr` install missing packages automatically; `tlmgr-root`, `apt`, `dnf`, `zypper`, `pacman` need the user), versions of pdfLaTeX, XeLaTeX, LuaLaTeX, latexmk, BibTeX, Biber, SyncTeX |
 | `find_root_document` | Main document for a `.tex` file (`% !TEX root`, `\documentclass`, or the file that includes it) |
-| `compile_document` | Compile (latexmk when available, with BibTeX/Biber and reruns). Returns `success`, `pdf`, `errors` and `warnings` with file and line, and a `log_tail` on failure. Sends progress notifications when the client provides a progress token |
+| `compile_document` | Compile (latexmk when available, with BibTeX/Biber and reruns). Returns `success`, `pdf`, `errors` and `warnings` with file and line, and a `log_tail` on failure. When a package is missing and needs administrator rights to install, `install_hint` has the command for the user. Sends progress notifications when the client provides a progress token |
 | `get_document_outline` | Parts, chapters, sections and subsections in reading order across `\input`/`\include` |
 | `list_labels_and_citations` | Every `\label` (file, line) and every `.bib` entry (key, type, title) |
 | `check_references` | Without compiling: undefined `\ref` keys, `\cite` keys missing from `.bib`/`\bibitem`, duplicate labels |

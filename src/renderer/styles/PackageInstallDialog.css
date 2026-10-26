@@ -184,3 +184,34 @@
 }
 
 
+.package-install-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 14px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.package-install-note svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.package-install-failure {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-danger-border);
+  border-radius: 6px;
+  color: var(--color-danger-text);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.package-install-manual {
+  margin-top: 14px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}

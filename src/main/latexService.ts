@@ -4,7 +4,7 @@
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
-import { existsSync, readdirSync } from 'fs';
+import { constants as fsConstants, existsSync, readdirSync, realpathSync, statSync } from 'fs';
 import { execFile, spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import {
   detectMissingLatexPackage,
@@ -20,6 +20,17 @@ import {
   hasDocumentClass,
   stripLatexComments,
 } from '../shared/latexProject';
+import {
+  FONT_PACKAGES,
+  TexInstallPlan,
+  TexPackageManager,
+  canInstallSilently,
+  isSystemPackageManager,
+  isValidTexPackageName,
+  latexInstallSuggestion,
+  planTexPackageInstall,
+  texPackageFor,
+} from '../shared/texPackages';
 
 export const isWindows = process.platform === 'win32';
 export const isMac = process.platform === 'darwin';
@@ -291,6 +302,256 @@ const isLatexmkAvailable = async (): Promise<boolean> => {
 export const resetToolProbeCache = () => {
   distributionCache = null;
   latexmkCache = null;
+  texSetupCache = null;
+};
+
+// --- TeX package management ----------------------------------------------------
+
+const findOnPath = (command: string): string | null => {
+  const extensions = isWindows ? ['', ...(process.env.PATHEXT || '.EXE;.CMD;.BAT').split(';')] : [''];
+  for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+    for (const extension of extensions) {
+      const candidate = path.join(dir, command + extension);
+      try {
+        if (statSync(candidate).isFile()) {
+          return candidate;
+        }
+      } catch {
+        // not here
+      }
+    }
+  }
+  return null;
+};
+
+const detectSystemPackageManager = (): TexPackageManager => {
+  if (process.platform !== 'linux') {
+    return 'unknown';
+  }
+  const binaries: Array<[TexPackageManager, string]> = [
+    ['apt', '/usr/bin/apt-get'],
+    ['dnf', '/usr/bin/dnf'],
+    ['zypper', '/usr/bin/zypper'],
+    ['pacman', '/usr/bin/pacman'],
+  ];
+  return binaries.find(([, binary]) => existsSync(binary))?.[0] ?? 'unknown';
+};
+
+type TexSetup = {
+  distribution: 'miktex' | 'texlive' | 'unknown';
+  manager: TexPackageManager;
+  tlmgrPath?: string;
+};
+
+let texSetupCache: { value: TexSetup; at: number } | null = null;
+
+// Works out who owns the TeX installation, which decides how packages get
+// installed. Distribution TeX Live (pdflatex in /usr/bin) refuses tlmgr
+// ("running on Debian, switching to user mode") and is updated through the
+// system package manager instead.
+const detectTexSetup = async (): Promise<TexSetup> => {
+  if (texSetupCache && Date.now() - texSetupCache.at < PROBE_CACHE_MS) {
+    return texSetupCache.value;
+  }
+  const distribution = await detectLatexDistribution();
+  let manager: TexPackageManager = 'unknown';
+  let tlmgrPath: string | undefined;
+
+  const pdflatex = findOnPath('pdflatex');
+  let resolvedPdflatex = pdflatex;
+  try {
+    if (pdflatex) resolvedPdflatex = realpathSync(pdflatex);
+  } catch {
+    // keep the unresolved path
+  }
+
+  if (distribution === 'miktex') {
+    manager = 'miktex';
+  } else if (process.platform === 'linux' && resolvedPdflatex && /^\/(usr\/)?bin\//.test(resolvedPdflatex)) {
+    manager = detectSystemPackageManager();
+  } else if (distribution === 'texlive') {
+    const besideEngine = resolvedPdflatex ? path.join(path.dirname(resolvedPdflatex), isWindows ? 'tlmgr.bat' : 'tlmgr') : '';
+    tlmgrPath = besideEngine && existsSync(besideEngine) ? besideEngine : findOnPath('tlmgr') ?? undefined;
+    let writable = false;
+    try {
+      const { stdout } = await execFileAsync('kpsewhich', ['-var-value=TEXMFROOT'], { timeout: 15000 });
+      const root = stdout.trim();
+      if (root) {
+        await fs.access(path.join(root, 'tlpkg'), fsConstants.W_OK);
+        writable = true;
+      }
+    } catch {
+      writable = false;
+    }
+    manager = tlmgrPath ? (writable ? 'tlmgr' : 'tlmgr-root') : 'unknown';
+  }
+
+  const value: TexSetup = { distribution, manager, tlmgrPath };
+  texSetupCache = { value, at: Date.now() };
+  return value;
+};
+
+type PackageInstallResult = {
+  success: boolean;
+  message: string;
+  manager: TexPackageManager;
+  packages: string[];
+  // Set when the user has to run the install themselves.
+  manualCommand?: string;
+  output?: string;
+};
+
+const lastLines = (text: string, count = 6) => text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(-count).join('\n');
+
+const runInstallPlan = async (plan: TexInstallPlan): Promise<{ stdout: string; stderr: string }> => {
+  if (plan.elevated) {
+    const pkexec = findOnPath('pkexec') ?? (existsSync('/usr/bin/pkexec') ? '/usr/bin/pkexec' : null);
+    if (!pkexec) {
+      throw Object.assign(new Error('pkexec is not available'), { noElevation: true });
+    }
+    // Downloads for distribution TeX packages can be large.
+    return execFileAsync(pkexec, plan.argv, { timeout: 30 * 60 * 1000 });
+  }
+  if (isWindows && /^tlmgr(\.bat)?$/i.test(path.basename(plan.argv[0]))) {
+    // tlmgr is a batch file on Windows, which execFile cannot start directly.
+    // Package names were validated, so they are safe on a cmd.exe line.
+    return execFileAsync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'tlmgr', ...plan.argv.slice(1)], { timeout: 10 * 60 * 1000 });
+  }
+  if (plan.manager === 'miktex' && !findOnPath('miktex') && findOnPath('mpm')) {
+    // MiKTeX before 22.x has no `miktex` utility. Its mpm reports unknown
+    // packages with exit code 0, so check the message too.
+    const result = await execFileAsync('mpm', plan.packages.map(name => `--install=${name}`), { timeout: 10 * 60 * 1000 });
+    if (/Sorry, but:/i.test(`${result.stdout}\n${result.stderr}`)) {
+      throw Object.assign(new Error('mpm could not install the package'), result);
+    }
+    return result;
+  }
+  return execFileAsync(plan.argv[0], plan.argv.slice(1), { timeout: 10 * 60 * 1000 });
+};
+
+// `tlmgr search` finds the TeX Live package that contains a file, for
+// packages whose name differs from the .sty and is not in our table.
+const searchTexLivePackage = async (setup: TexSetup, fileName: string): Promise<string | null> => {
+  const target = /\.(sty|cls)$/i.test(fileName) ? fileName : `${fileName}.sty`;
+  const plan = planTexPackageInstall('tlmgr', ['placeholder'], { platform: process.platform, tlmgrPath: setup.tlmgrPath });
+  if (!plan) return null;
+  try {
+    const { stdout } = await runInstallPlan({ ...plan, argv: [plan.argv[0], 'search', '--global', '--file', `/${target}`] });
+    let current: string | null = null;
+    for (const line of stdout.split(/\r?\n/)) {
+      const header = line.match(/^([A-Za-z0-9._-]+):\s*$/);
+      if (header) {
+        current = header[1];
+      } else if (current && line.trim().endsWith(`/${target}`)) {
+        return current;
+      }
+    }
+  } catch {
+    // offline or no tlmgr: keep the original name
+  }
+  return null;
+};
+
+const describeInstallFailure = (error: any): string => {
+  if (error?.noElevation) {
+    return 'Installing system packages needs administrator rights, and no password prompt (pkexec) is available.';
+  }
+  if (error?.code === 126) {
+    return 'The administrator password prompt was cancelled.';
+  }
+  if (error?.code === 127) {
+    return 'Administrator rights could not be obtained (no polkit authentication agent is running).';
+  }
+  const detail = lastLines(`${error?.stderr || ''}\n${error?.stdout || ''}`) || error?.message || 'unknown error';
+  return `The installation failed:\n${detail}`;
+};
+
+// Installs the packages that provide the given LaTeX files (names as reported
+// by detectMissingLatexPackage). With `interactive: false` nothing that needs
+// a password is attempted; the result then carries the manual command.
+const installLatexPackages = async (
+  fileNames: string[],
+  options: { interactive?: boolean } = {}
+): Promise<PackageInstallResult> => {
+  const names = fileNames.filter(isValidTexPackageName);
+  const setup = await detectTexSetup();
+  if (names.length === 0) {
+    return { success: false, message: 'Invalid package name.', manager: setup.manager, packages: [] };
+  }
+  const plan = planTexPackageInstall(setup.manager, names, { platform: process.platform, tlmgrPath: setup.tlmgrPath });
+  if (!plan) {
+    return {
+      success: false,
+      message: 'Openotex could not tell which package manager owns this LaTeX installation. Install the missing packages with your TeX distribution\'s tools.',
+      manager: setup.manager,
+      packages: names,
+    };
+  }
+  if (plan.elevated && !options.interactive) {
+    return {
+      success: false,
+      message: 'This LaTeX installation is managed by the system; installing packages needs administrator rights.',
+      manager: setup.manager,
+      packages: plan.packages,
+      manualCommand: plan.manualCommand,
+    };
+  }
+
+  const finish = async (activePlan: TexInstallPlan, output: string): Promise<PackageInstallResult> => {
+    if (activePlan.manager === 'miktex') {
+      await execFileAsync('initexmf', ['--update-fndb'], { timeout: 60000 }).catch(() => {});
+    }
+    return {
+      success: true,
+      message: `Installed ${activePlan.packages.join(', ')}`,
+      manager: activePlan.manager,
+      packages: activePlan.packages,
+      output,
+    };
+  };
+
+  try {
+    console.log(`Installing LaTeX packages via ${plan.manager}: ${plan.packages.join(' ')}`);
+    const { stdout, stderr } = await runInstallPlan(plan);
+    return await finish(plan, `${stdout}\n${stderr}`);
+  } catch (error: any) {
+    const output = `${error?.stdout || ''}\n${error?.stderr || ''}`;
+    // tlmgr only knows package names; look up the package that has the file.
+    if ((plan.manager === 'tlmgr' || plan.manager === 'tlmgr-root') && /not present in repository|unknown package/i.test(output)) {
+      const resolved = await Promise.all(names.map(async name => (await searchTexLivePackage(setup, name)) ?? texPackageFor(name)));
+      const retryPlan = planTexPackageInstall(setup.manager, resolved, { platform: process.platform, tlmgrPath: setup.tlmgrPath });
+      if (retryPlan && retryPlan.packages.join(' ') !== plan.packages.join(' ')) {
+        try {
+          const { stdout, stderr } = await runInstallPlan(retryPlan);
+          return await finish(retryPlan, `${stdout}\n${stderr}`);
+        } catch (retryError: any) {
+          error = retryError;
+        }
+      }
+    }
+    console.error(`Package installation failed (${plan.manager}):`, error?.message || error);
+    return {
+      success: false,
+      message: describeInstallFailure(error),
+      manager: plan.manager,
+      packages: plan.packages,
+      manualCommand: plan.manualCommand,
+      output,
+    };
+  }
+};
+
+// Text for the preview when a package is missing and cannot be installed
+// without the user (system-managed or unknown TeX installations).
+const manualInstallHint = async (fileNames: string[], label?: string): Promise<{ message: string; command?: string }> => {
+  const setup = await detectTexSetup();
+  const plan = planTexPackageInstall(setup.manager, fileNames, { platform: process.platform, tlmgrPath: setup.tlmgrPath });
+  const what = label ?? fileNames.map(name => (/\.(sty|cls)$/i.test(name) ? name : `${name}.sty`)).join(', ');
+  if (!plan) {
+    return { message: `${what} is not installed. Install it with your TeX distribution's package manager.` };
+  }
+  const owner = isSystemPackageManager(setup.manager) ? `your system package manager (${setup.manager})` : setup.manager;
+  return { message: `${what} is not installed. This LaTeX installation is managed by ${owner}; install it with:`, command: plan.manualCommand };
 };
 
 // --- Multi-file project support -------------------------------------------------
@@ -490,84 +751,6 @@ const needsRecompilation = (output: string): boolean => {
   return recompilePatterns.some(pattern => pattern.test(output));
 };
 
-// Helper function to install missing LaTeX fonts
-const installLatexFonts = async (distribution: 'miktex' | 'texlive' | 'unknown'): Promise<{ success: boolean; message: string }> => {
-  try {
-    if (distribution === 'miktex') {
-      console.log('Installing EC fonts package via MiKTeX...');
-      await execFileAsync('mpm', ['--install=ec'], { timeout: 120000 });
-
-      console.log('Installing CM-Super fonts package via MiKTeX...');
-      await execFileAsync('mpm', ['--install=cm-super'], { timeout: 120000 });
-
-      console.log('Refreshing MiKTeX file database...');
-      await execFileAsync('initexmf', ['--update-fndb'], { timeout: 60000 });
-    } else if (distribution === 'texlive') {
-      console.log('Installing EC fonts package via TeX Live...');
-      await execFileAsync('tlmgr', ['install', 'ec'], { timeout: 120000 });
-
-      console.log('Installing CM-Super fonts package via TeX Live...');
-      await execFileAsync('tlmgr', ['install', 'cm-super'], { timeout: 120000 });
-
-      console.log('Refreshing TeX Live file database...');
-      try {
-        await execFileAsync('mktexlsr', [], { timeout: 60000 });
-      } catch {
-        await execFileAsync('texhash', [], { timeout: 60000 });
-      }
-    } else {
-      return { success: false, message: 'Unknown LaTeX distribution. Skipping automatic font installation.' };
-    }
-
-    return {
-      success: true,
-      message: 'Required fonts installed successfully'
-    };
-  } catch (error: any) {
-    console.error('Font installation failed:', error);
-    return {
-      success: false,
-      message: `Font installation failed: ${error.message}`
-    };
-  }
-};
-
-// Helper function to install missing LaTeX package
-const installLatexPackage = async (packageName: string): Promise<{ success: boolean; message: string }> => {
-  try {
-    console.log(`Installing LaTeX package: ${packageName}`);
-    if (!/^[A-Za-z0-9._-]+$/.test(packageName)) {
-      return { success: false, message: 'Invalid package name.' };
-    }
-
-    const distribution = await detectLatexDistribution();
-    if (distribution === 'miktex') {
-      await execFileAsync('mpm', [ `--install=${packageName}` ], { timeout: 120000 });
-      await execFileAsync('initexmf', ['--update-fndb'], { timeout: 60000 });
-    } else if (distribution === 'texlive') {
-      await execFileAsync('tlmgr', ['install', packageName], { timeout: 120000 });
-      try {
-        await execFileAsync('mktexlsr', [], { timeout: 60000 });
-      } catch {
-        await execFileAsync('texhash', [], { timeout: 60000 });
-      }
-    } else {
-      return { success: false, message: 'Unknown LaTeX distribution.' };
-    }
-
-    return {
-      success: true,
-      message: `Package ${packageName} installed successfully`
-    };
-  } catch (error: any) {
-    console.error(`Package installation failed for ${packageName}:`, error);
-    return {
-      success: false,
-      message: `Failed to install package ${packageName}: ${error.message}`
-    };
-  }
-};
-
 // Diagnostics from `-file-line-error` use paths relative to the root folder;
 // make them absolute so the editor can open the right file.
 // The console and the .log spell the same file differently ("a.tex" vs
@@ -644,6 +827,8 @@ export type CompileResult = {
   rootFile: string;
   cancelled?: boolean;
   notDocument?: boolean;
+  // How to install a missing package/font when Openotex cannot do it alone.
+  installHint?: { message: string; command?: string };
   diagnostics: LatexDiagnostic[];
 };
 
@@ -669,7 +854,9 @@ const compileLatexDocumentUnlocked = async (
     const filename = path.basename(rootFile, path.extname(rootFile));
     const pdfPath = path.join(dir, `${filename}.pdf`);
     const auxPath = path.join(dir, `${filename}.aux`);
-    const distribution = await detectLatexDistribution();
+    const texSetup = await detectTexSetup();
+    // Installs that would need a password are left to the user.
+    const autoInstall = canInstallSilently(texSetup.manager);
     const forceRebuild = Boolean(options?.force);
 
     if (!samePath(rootFile, texFilePath)) {
@@ -799,7 +986,9 @@ const compileLatexDocumentUnlocked = async (
       await fs.unlink(path.join(auxDir, `${filename}.bbl`)).catch(() => {});
     };
 
-    const recoverFromLatexFailure = async (errorOutput: string, attemptCount: number, auxDir: string) => {
+    type Recovery = { retry: boolean; installHint?: CompileResult['installHint'] };
+
+    const recoverFromLatexFailure = async (errorOutput: string, attemptCount: number, auxDir: string): Promise<Recovery> => {
         // Check for citation/bibliography errors - clean auxiliary files and retry
         if (detectCitationError(errorOutput) && attemptCount <= 2) {
           console.log('Citation error detected, cleaning auxiliary files...');
@@ -824,107 +1013,62 @@ const compileLatexDocumentUnlocked = async (
           }
         }
 
-        // Check for font errors
-        const fontError = detectFontError(errorOutput);
-        if (fontError.hasError) {
-          console.log('Font error detected, attempting to install fonts...');
-
-          // If we detected a specific font package, install it
-          if (fontError.packageName && !installedPackages.has(fontError.packageName)) {
+        // Missing packages first: "File `x.sty' not found" also matches the
+        // broad font patterns below.
+        const missingPackage = detectMissingLatexPackage(errorOutput);
+        if (missingPackage) {
+          if (!autoInstall) {
+            // System-managed TeX needs a password: the preview offers the
+            // install instead of a prompt appearing during compilation.
+            return { retry: false, installHint: await manualInstallHint([missingPackage]) };
+          }
+          if (!installedPackages.has(missingPackage)) {
+            installedPackages.add(missingPackage);
             sendStatus({
-              stage: 'font-installation',
-              message: `Installing font package: ${fontError.packageName}...`
+              stage: 'package-installation',
+              message: `Installing missing LaTeX package: ${missingPackage}...`
             });
-
-            const installResult = await installLatexPackage(fontError.packageName);
+            const installResult = await installLatexPackages([missingPackage]);
             if (installResult.success) {
-              installedPackages.add(fontError.packageName);
-              console.log(`Font package ${fontError.packageName} installed, retrying compilation...`);
-              sendStatus({
-                stage: 'retry',
-                message: `Font package ${fontError.packageName} installed. Retrying compilation...`
-              });
+              sendStatus({ stage: 'retry', message: `Package ${missingPackage} installed. Retrying compilation...` });
               return { retry: true };
             }
+            return {
+              retry: false,
+              installHint: { message: `Installing ${missingPackage} failed. ${installResult.message}`, command: installResult.manualCommand },
+            };
           }
+          return {
+            retry: false,
+            installHint: {
+              message: `${missingPackage} is still missing after installing "${texPackageFor(missingPackage)}". ` +
+                'Check the spelling, or find the package that provides this file in your TeX distribution\'s package manager.',
+            },
+          };
+        }
 
+        // Fonts TeX tries to generate with METAFONT (T1 encoding without
+        // cm-super or lmodern).
+        const fontError = detectFontError(errorOutput);
+        const fontsMissing = /This is METAFONT|mktextfm|\.tfm'|No file .+\.tfm/i.test(errorOutput);
+        if (fontError.hasError && fontsMissing) {
+          if (!autoInstall) {
+            return { retry: false, installHint: await manualInstallHint(FONT_PACKAGES, 'The EC/CM-Super fonts are') };
+          }
           if (!attemptedFontFallback) {
             attemptedFontFallback = true;
             sendStatus({
               stage: 'font-installation',
               message: 'Installing required LaTeX fonts (EC, CM-Super)... This may take a few minutes.'
             });
-
-            if (distribution === 'unknown') {
-              return {
-                retry: false,
-                failure: {
-                  success: false,
-                  error: 'Font installation failed',
-                  log: errorOutput,
-                  details: 'Unknown LaTeX distribution. Install fonts manually.',
-                  rootFile,
-                  diagnostics: diagnosticsFor(errorOutput)
-                }
-              };
-            }
-
-            const installResult = await installLatexFonts(distribution);
-
+            const installResult = await installLatexPackages(FONT_PACKAGES);
             if (installResult.success) {
-              console.log('Fonts installed, retrying compilation...');
-              sendStatus({
-                stage: 'retry',
-                message: 'Fonts installed successfully. Retrying compilation...'
-              });
+              sendStatus({ stage: 'retry', message: 'Fonts installed successfully. Retrying compilation...' });
               return { retry: true };
-            } else {
-              return {
-                retry: false,
-                failure: {
-                  success: false,
-                  error: 'Font installation failed',
-                  log: errorOutput,
-                  details: installResult.message,
-                  rootFile,
-                  diagnostics: diagnosticsFor(errorOutput)
-                }
-              };
             }
-          }
-        }
-
-        // Check for missing packages
-        const missingPackage = detectMissingLatexPackage(errorOutput);
-        if (missingPackage && !installedPackages.has(missingPackage)) {
-          console.log(`Missing package detected: ${missingPackage}`);
-
-          sendStatus({
-            stage: 'package-installation',
-            message: `Installing missing LaTeX package: ${missingPackage}...`
-          });
-
-          const installResult = await installLatexPackage(missingPackage);
-
-          if (installResult.success) {
-            installedPackages.add(missingPackage);
-            console.log(`Package ${missingPackage} installed, retrying compilation...`);
-            sendStatus({
-              stage: 'retry',
-              message: `Package ${missingPackage} installed. Retrying compilation...`
-            });
-            return { retry: true };
-          } else {
             return {
               retry: false,
-              failure: {
-                success: false,
-                error: `Failed to install package: ${missingPackage}`,
-                log: errorOutput,
-                details: installResult.message,
-                rootFile,
-                diagnostics: diagnosticsFor(errorOutput)
-              }
+              installHint: { message: `Installing the EC/CM-Super fonts failed. ${installResult.message}`, command: installResult.manualCommand },
             };
           }
         }
@@ -999,13 +1143,13 @@ const compileLatexDocumentUnlocked = async (
           }
           forceNext = true;
           const recovery = await recoverFromLatexFailure(errorOutput, attempt, latexmkOutputDir);
-          if ('failure' in recovery && recovery.failure) {
-            return recovery.failure;
-          }
           if (recovery.retry && attempt < maxLatexmkAttempts) {
             continue;
           }
-          return makeFailure(errorOutput, error.message || 'latexmk failed', (await readTextFile(latexmkLogPath)) ?? '');
+          return {
+            ...makeFailure(errorOutput, error.message || 'latexmk failed', (await readTextFile(latexmkLogPath)) ?? ''),
+            installHint: recovery.installHint,
+          };
         }
       }
 
@@ -1037,15 +1181,11 @@ const compileLatexDocumentUnlocked = async (
         }
         const errorOutput = (error.stdout || '') + (error.stderr || '');
         const recovery = await recoverFromLatexFailure(errorOutput, attemptCount, dir);
-
-        if ('failure' in recovery && recovery.failure) {
-          return recovery.failure;
-        }
         if (recovery.retry && attemptCount < maxAttempts) {
           continue;
         }
 
-        return makeFailure(errorOutput, error.message || 'Compilation failed');
+        return { ...makeFailure(errorOutput, error.message || 'Compilation failed'), installHint: recovery.installHint };
       }
     }
 
@@ -1407,7 +1547,11 @@ export {
   collectProjectFiles,
   readTextFile,
   resolveRootDocument,
-  installLatexPackage,
+  detectTexSetup,
+  detectSystemPackageManager,
+  installLatexPackages,
+  planTexPackageInstall,
+  latexInstallSuggestion,
   TEX_EXTENSIONS,
 };
-export type { ProcessCancelToken };
+export type { ProcessCancelToken, TexSetup, PackageInstallResult };

@@ -1,6 +1,6 @@
 {
   "name": "openotex",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "A modern, open-source LaTeX editor for desktop",
   "main": "dist/main.js",
   "homepage": "https://openotex.com",
@@ -21,7 +21,7 @@
     "build:renderer": "cross-env NODE_ENV=production webpack --config webpack.renderer.config.js",
     "build:preload": "cross-env NODE_ENV=production webpack --config webpack.preload.config.js",
     "build:mcp": "cross-env NODE_ENV=production webpack --config webpack.mcp.config.js",
-    "test": "tsc -p tsconfig.test.json && node .test-dist/tests/latexDiagnostics.test.js && node .test-dist/tests/latexProject.test.js",
+    "test": "tsc -p tsconfig.test.json && node .test-dist/tests/latexDiagnostics.test.js && node .test-dist/tests/latexProject.test.js && node .test-dist/tests/texPackages.test.js",
     "package": "npm run build && electron-builder --win --publish never",
     "package:win": "npm run build && electron-builder --win --publish never",
     "package:linux": "npm run build && electron-builder --linux --publish never",
@@ -73,6 +73,7 @@
     "appId": "com.openotex.app",
     "productName": "Openotex",
     "copyright": "© 2026 Openotex team",
+    "afterPack": "scripts/linux-after-pack.js",
     "directories": {
       "output": "release"
     },

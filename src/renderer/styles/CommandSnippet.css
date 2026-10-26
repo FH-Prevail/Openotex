@@ -1,0 +1,38 @@
+.command-snippet {
+  position: relative;
+  margin: 8px 0 0;
+  text-align: left;
+}
+
+.command-snippet pre {
+  margin: 0;
+  padding: 10px 84px 10px 12px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: 'Monaco', 'Consolas', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.command-snippet-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 5px;
+  background-color: var(--color-accent);
+  color: var(--color-bg-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.command-snippet-copy:hover {
+  background-color: var(--color-accent-hover);
+}

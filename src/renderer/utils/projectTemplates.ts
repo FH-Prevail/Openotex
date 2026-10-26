@@ -46,8 +46,9 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
 
 % Essential packages
 \\usepackage[utf8]{inputenc}
-\\usepackage[T1]{fontenc}
-\\usepackage{lmodern}
+% Latin Modern fonts with T1 encoding where installed; minimal TeX
+% installations lack them and keep the default Computer Modern fonts.
+\\IfFileExists{lmodern.sty}{\\usepackage[T1]{fontenc}\\usepackage{lmodern}}{}
 \\usepackage{amsmath}
 \\usepackage{amssymb}
 \\usepackage{graphicx}
@@ -93,8 +94,9 @@ Section~\\ref{sec:introduction} introduced the topic.
       'main.tex': `\\documentclass[12pt,a4paper]{report}
 
 \\usepackage[utf8]{inputenc}
-\\usepackage[T1]{fontenc}
-\\usepackage{lmodern}
+% Latin Modern fonts with T1 encoding where installed; minimal TeX
+% installations lack them and keep the default Computer Modern fonts.
+\\IfFileExists{lmodern.sty}{\\usepackage[T1]{fontenc}\\usepackage{lmodern}}{}
 \\usepackage{amsmath}
 \\usepackage{graphicx}
 \\usepackage{hyperref}
@@ -140,7 +142,9 @@ Chapter~\\ref{chap:introduction} introduced the topic.
 
 \\usetheme{Madrid}
 \\usepackage[utf8]{inputenc}
-\\usepackage[T1]{fontenc}
+% Latin Modern fonts with T1 encoding where installed; minimal TeX
+% installations lack them and keep the default Computer Modern fonts.
+\\IfFileExists{lmodern.sty}{\\usepackage[T1]{fontenc}\\usepackage{lmodern}}{}
 
 \\title{${title}}
 \\author{Your Name}

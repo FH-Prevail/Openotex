@@ -8,6 +8,7 @@
 // ELECTRON_RUN_AS_NODE=1, or with any Node.js >= 18.
 import * as path from 'path';
 import { format } from 'util';
+import { existsSync } from 'fs';
 import { spawn } from 'child_process';
 import { APP_EDITION, APP_VERSION } from '../shared/appInfo';
 import {
@@ -22,7 +23,7 @@ import {
   collectLatexReferences,
   collectProjectFiles,
   compileLatexDocument,
-  detectLatexDistribution,
+  detectTexSetup,
   execFileAsync,
   isInsideDirectory,
   isLatexmkAvailable,
@@ -126,7 +127,9 @@ const appLaunchCommand = (): { command: string; args: string[] } | null => {
     return { command: process.env.APPIMAGE, args: [] };
   }
   if (/openotex/i.test(path.basename(process.execPath))) {
-    return { command: process.execPath, args: [] };
+    // Linux packages start openotex.bin through the "openotex" launcher.
+    const launcher = process.execPath.replace(/\.bin$/, '');
+    return { command: launcher !== process.execPath && existsSync(launcher) ? launcher : process.execPath, args: [] };
   }
   return null;
 };
@@ -164,9 +167,13 @@ const tools: Tool[] = [
       const versions = await Promise.all(names.map(name => toolVersion(name, name === 'latexmk' ? ['-v'] : ['--version'])));
       const toolsFound: Json = {};
       names.forEach((name, index) => { toolsFound[name] = versions[index]; });
+      const setup = await detectTexSetup();
       return {
         openotex: `${APP_VERSION} (${APP_EDITION})`,
-        distribution: await detectLatexDistribution(),
+        distribution: setup.distribution,
+        // miktex/tlmgr install missing packages on their own; tlmgr-root and
+        // apt/dnf/zypper/pacman need the user (administrator rights).
+        package_manager: setup.manager,
         latexmk_available: await isLatexmkAvailable(),
         tools: toolsFound,
         platform: process.platform,
@@ -236,6 +243,11 @@ const tools: Tool[] = [
       } else {
         output.error = result.error;
         if (result.notDocument) output.not_a_document = true;
+        if (result.installHint) {
+          output.install_hint = result.installHint.command
+            ? `${result.installHint.message} ${result.installHint.command}`
+            : result.installHint.message;
+        }
         const logLines = `${result.log || ''}\n${result.details || ''}`.split(/\r?\n/).filter(line => line.trim());
         if (logLines.length) output.log_tail = logLines.slice(-60).join('\n');
       }
