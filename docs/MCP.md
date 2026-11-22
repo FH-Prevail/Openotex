@@ -23,8 +23,8 @@ The command is the Openotex executable with `ELECTRON_RUN_AS_NODE=1`, so no sepa
 ```bash
 claude mcp add --transport stdio --scope user openotex \
   --env ELECTRON_RUN_AS_NODE=1 \
-  --env OPENOTEX_APP=/home/you/Applications/Openotex-1.6.1-x86_64.AppImage \
-  -- /home/you/Applications/Openotex-1.6.1-x86_64.AppImage /home/you/.config/openotex/mcp/openotex-mcp.cjs
+  --env OPENOTEX_APP=/home/you/Applications/Openotex-1.6.2-x86_64.AppImage \
+  -- /home/you/Applications/Openotex-1.6.2-x86_64.AppImage /home/you/.config/openotex/mcp/openotex-mcp.cjs
 ```
 
 ### Claude Desktop, Cursor and other `mcpServers` clients

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.6.2] - unreleased (Steyr Edition)
+## [1.6.2] - 2026-11-22 — Steyr Edition
 
 ### Changed
 - The website moved to https://openotex.texabr.org/ (openotex.com no longer exists). The update check (at startup and in Help → About), the download link it opens and the Content Security Policy now use the new address. Versions up to 1.6.1 still ask openotex.com and therefore no longer see new releases; their users need to install 1.6.2 once by hand.

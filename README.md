@@ -6,7 +6,7 @@
 
 **A modern, open-source LaTeX editor for desktop**
 
-Version 1.6.1 (Steyr Edition)
+Version 1.6.2 (Steyr Edition)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Electron](https://img.shields.io/badge/Electron-28-blue.svg)](https://www.electronjs.org/)
@@ -62,15 +62,15 @@ Download Openotex from the official website:
 
 | Platform | Package | Notes |
 |----------|---------|-------|
-| Windows 10/11 (x64) | `Openotex-Setup-1.6.1.exe` | Installer with Start menu entry |
-| Windows 10/11 (x64) | `Openotex-1.6.1-win-x64.zip` | Portable: extract and run `Openotex.exe` |
-| Linux (x86_64) | `Openotex-1.6.1-x86_64.AppImage` | Single file, no installation |
+| Windows 10/11 (x64) | `Openotex-Setup-1.6.2.exe` | Installer with Start menu entry |
+| Windows 10/11 (x64) | `Openotex-1.6.2-win-x64.zip` | Portable: extract and run `Openotex.exe` |
+| Linux (x86_64) | `Openotex-1.6.2-x86_64.AppImage` | Single file, no installation |
 
 **Linux AppImage:**
 
 ```bash
-chmod +x Openotex-1.6.1-x86_64.AppImage
-./Openotex-1.6.1-x86_64.AppImage
+chmod +x Openotex-1.6.2-x86_64.AppImage
+./Openotex-1.6.2-x86_64.AppImage
 ```
 
 On systems that restrict unprivileged user namespaces (Ubuntu 24.04 and newer) or when started as root, the AppImage turns off the Chromium sandbox by itself. Some systems need FUSE 2 to run AppImages (`sudo apt install libfuse2t64` on Ubuntu 24.04, `libfuse2` on older releases).

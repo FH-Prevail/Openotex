@@ -3,7 +3,7 @@
 These instructions apply to this repository (`GitHub/Openotex_github/Openotex`),
 the maintained source of the Openotex Electron desktop application.
 
-Current release: **1.6.1 (Steyr Edition)**, 2026-10-26.
+Current release: **1.6.2 (Steyr Edition)**, 2026-11-22.
 
 ## Project boundary
 
