@@ -58,7 +58,7 @@ Openotex is a clean, modern LaTeX editor built with Electron, React, and TypeScr
 
 Download Openotex from the official website:
 
-**🌐 [openotex.com](https://openotex.com/#download)**
+**🌐 [openotex.texabr.org](https://openotex.texabr.org/#download)**
 
 | Platform | Package | Notes |
 |----------|---------|-------|
@@ -288,7 +288,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- **Website:** [openotex.com](https://openotex.com)
+- **Website:** [openotex.texabr.org](https://openotex.texabr.org)
 - **Issues:** [GitHub Issues](https://github.com/FH-Prevail/Openotex/issues)
 
 ## Disclaimer

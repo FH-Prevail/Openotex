@@ -9,7 +9,7 @@ Current release: **1.6.1 (Steyr Edition)**, 2026-10-26.
 
 - This repository is the desktop app. Its `dist/` folder is Electron/Webpack
   output and is **not** the public website. Never copy it to the web server.
-- The website source for `https://openotex.com/` is
+- The website source for `https://openotex.texabr.org/` is
   `../../openotex_website` (i.e. `GitHub/openotex_website`). Its own
   `AGENTS.md` describes validation, deployment and rollback.
 - `GitHub/Openotex` (no `_github`) is an older copy of the app; do not develop

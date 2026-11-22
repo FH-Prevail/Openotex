@@ -9,8 +9,8 @@ interface AboutDialogProps {
 }
 
 const CURRENT_VERSION = APP_VERSION;
-const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
-const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
+const VERSION_CHECK_URL = 'https://openotex.texabr.org/downloads/Openotex-Setup-';
+const DOWNLOAD_PAGE_URL = 'https://openotex.texabr.org/#download';
 
 const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
   // Hooks must run on every render, so the early return comes after them.
@@ -64,7 +64,7 @@ const AboutDialog: React.FC<AboutDialogProps> = ({ isOpen, onClose }) => {
       let foundUpdate = false;
 
       try {
-        const versionResponse = await fetch('https://openotex.com/version.json', { cache: 'no-cache' });
+        const versionResponse = await fetch('https://openotex.texabr.org/version.json', { cache: 'no-cache' });
         if (versionResponse.ok) {
           const versionData = await versionResponse.json();
           latestVersion = normalizeVersion(versionData.version || versionData.latest || CURRENT_VERSION);

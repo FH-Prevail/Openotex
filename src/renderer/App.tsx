@@ -1516,8 +1516,8 @@ const AppContent: React.FC = () => {
                     setTimeout(async () => {
                         try {
                             const CURRENT_VERSION = APP_VERSION;
-                            const VERSION_CHECK_URL = 'https://openotex.com/downloads/Openotex-Setup-';
-                            const DOWNLOAD_PAGE_URL = 'https://openotex.com/#download';
+                            const VERSION_CHECK_URL = 'https://openotex.texabr.org/downloads/Openotex-Setup-';
+                            const DOWNLOAD_PAGE_URL = 'https://openotex.texabr.org/#download';
 
                             let latestVersion = CURRENT_VERSION;
                             let foundUpdate = false;
@@ -1538,7 +1538,7 @@ const AppContent: React.FC = () => {
                             };
 
                             try {
-                                const versionResponse = await fetch('https://openotex.com/version.json', { cache: 'no-cache' });
+                                const versionResponse = await fetch('https://openotex.texabr.org/version.json', { cache: 'no-cache' });
                                 if (versionResponse.ok) {
                                     const versionData = await versionResponse.json();
                                     latestVersion = versionData.version || versionData.latest || CURRENT_VERSION;

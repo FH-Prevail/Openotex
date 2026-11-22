@@ -52,7 +52,7 @@ To keep your Openotex installation secure:
 
 1. **Keep Updated**: Always use the latest version of Openotex
 2. **Enable Auto-Updates**: Enable automatic update checking in the application
-3. **Trusted Sources**: Only download Openotex from official sources (GitHub releases, openotex.com)
+3. **Trusted Sources**: Only download Openotex from official sources (GitHub releases, openotex.texabr.org)
 4. **LaTeX Packages**: Be cautious when installing LaTeX packages from unknown sources
 5. **File Permissions**: Ensure your project files have appropriate permissions
 6. **Review Code**: If using templates or packages from third parties, review them before use
@@ -70,7 +70,7 @@ To keep your Openotex installation secure:
 - Only install packages you trust
 
 ### Network Requests
-- Openotex checks for updates by connecting to openotex.com
+- Openotex checks for updates by connecting to openotex.texabr.org
 - This can be disabled in the settings
 - No personal data is transmitted during update checks
 
